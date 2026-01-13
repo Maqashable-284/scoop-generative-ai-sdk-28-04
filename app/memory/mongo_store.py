@@ -40,12 +40,14 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import IndexModel, ASCENDING, DESCENDING
 from pymongo.errors import ConnectionFailure, OperationFailure
 
-# Gemini SDK types for reference
+# Gemini SDK types for reference (New SDK)
 try:
-    from google.generativeai.types import Content, Part
+    from google.genai.types import Content, Part, UserContent, ModelContent
 except ImportError:
     Content = Any
     Part = Any
+    UserContent = Any
+    ModelContent = Any
 
 logger = logging.getLogger(__name__)
 
@@ -310,18 +312,20 @@ class ConversationStore:
 
     def gemini_to_bson(self, history: List[Content]) -> List[Dict[str, Any]]:
         """
-        ANSWER TO QUESTION #1: chat.history format
+        ANSWER TO QUESTION #1: chat.history format (Updated for New SDK)
 
         Convert Gemini Content objects to BSON-storable format
 
-        Gemini history structure:
+        New SDK history structure uses UserContent/ModelContent:
         [
-            Content(role="user", parts=[Part(text="გამარჯობა")]),
-            Content(role="model", parts=[
+            UserContent(parts=[Part(text="გამარჯობა")]),
+            ModelContent(parts=[
                 Part(text="გამარჯობა! რით დაგეხმარო?"),
                 Part(function_call=FunctionCall(name="search", args={...}))
             ])
         ]
+
+        Also handles old SDK format with Content(role=...) for backwards compatibility.
         """
         def proto_to_native(obj):
             """Recursively convert protobuf types to native Python types"""
@@ -339,8 +343,18 @@ class ConversationStore:
         bson_history = []
 
         for content in history:
+            # Determine role from content type (new SDK) or role attribute (old SDK)
+            if hasattr(content, 'role'):
+                role = content.role
+            elif content.__class__.__name__ == 'UserContent':
+                role = 'user'
+            elif content.__class__.__name__ == 'ModelContent':
+                role = 'model'
+            else:
+                role = 'user'  # Default fallback
+
             entry = {
-                "role": content.role,
+                "role": role,
                 "parts": []
             }
 
@@ -350,7 +364,7 @@ class ConversationStore:
                 elif hasattr(part, "function_call") and part.function_call:
                     # Use proto_to_native for robust conversion
                     args_dict = proto_to_native(part.function_call.args) if part.function_call.args else {}
-                    
+
                     entry["parts"].append({
                         "function_call": {
                             "name": part.function_call.name,
@@ -360,7 +374,7 @@ class ConversationStore:
                 elif hasattr(part, "function_response") and part.function_response:
                     # Use proto_to_native for robust conversion
                     response_data = proto_to_native(part.function_response.response) if part.function_response.response else None
-                    
+
                     entry["parts"].append({
                         "function_response": {
                             "name": part.function_response.name,
@@ -368,7 +382,8 @@ class ConversationStore:
                         }
                     })
 
-            bson_history.append(entry)
+            if entry["parts"]:  # Only add if there are parts
+                bson_history.append(entry)
 
         return bson_history
 
@@ -376,11 +391,13 @@ class ConversationStore:
         """
         Convert BSON history back to Gemini-compatible format
 
-        Note: Returns dicts that Gemini SDK accepts for history parameter
-        The SDK can accept either Content objects or dicts with role/parts
+        Note: Returns dicts that Gemini SDK accepts for history parameter.
+        The SessionManager._bson_to_sdk_history() method handles conversion
+        to UserContent/ModelContent objects required by the new SDK.
+
+        This method is kept for backwards compatibility and intermediate format.
         """
-        # Gemini SDK accepts history as list of dicts with role/parts
-        # No need to convert to Content objects
+        # Return raw BSON history - SessionManager handles SDK type conversion
         return bson_history
 
     def estimate_tokens(self, history: List[Dict[str, Any]]) -> int:

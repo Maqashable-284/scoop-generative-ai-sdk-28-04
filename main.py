@@ -55,13 +55,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-# Google Generative AI
-import google.generativeai as genai
-from google.generativeai.types import (
+# Google GenAI SDK (new unified SDK)
+from google import genai
+from google.genai import types
+from google.genai.types import (
+    GenerateContentConfig,
+    SafetySetting,
     HarmCategory,
     HarmBlockThreshold,
-    GenerationConfig,
-    ContentDict,
+    Part,
+    UserContent,
+    ModelContent,
 )
 
 # Local imports
@@ -115,27 +119,35 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# GEMINI CONFIGURATION
+# GEMINI CONFIGURATION (New SDK)
 # =============================================================================
 
-# Initialize Gemini
-genai.configure(api_key=settings.gemini_api_key)
+# Initialize Gemini client (new SDK uses client-based approach)
+# API key can be passed directly or via GEMINI_API_KEY env var
+gemini_client = genai.Client(api_key=settings.gemini_api_key)
 
-# Question #6: Security - Safety Settings
-SAFETY_SETTINGS = {
-    HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-    HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-    HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-    HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-}
+# Question #6: Security - Safety Settings (new format: list of SafetySetting objects)
+SAFETY_SETTINGS = [
+    SafetySetting(
+        category=HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+        threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+    ),
+    SafetySetting(
+        category=HarmCategory.HARM_CATEGORY_HARASSMENT,
+        threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+    ),
+    SafetySetting(
+        category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+        threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+    ),
+    SafetySetting(
+        category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+        threshold=HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+    ),
+]
 
-# Generation config - max_output_tokens from settings for Gemini 3 compatibility
-GENERATION_CONFIG = GenerationConfig(
-    temperature=0.7,
-    top_p=0.95,
-    top_k=40,
-    max_output_tokens=settings.max_output_tokens,  # Default 4096 for longer responses
-)
+# Generation config - now part of GenerateContentConfig in new SDK
+# Will be merged into chat config when creating sessions
 
 
 # =============================================================================
@@ -214,10 +226,11 @@ async def call_with_retry(
 
 @dataclass
 class Session:
-    """Chat session with Gemini model"""
+    """Chat session with Gemini model (new SDK)"""
     user_id: str
     session_id: str
-    chat: Any  # genai.ChatSession
+    chat: Any  # google.genai async chat session
+    history: list = field(default_factory=list)  # Track history for MongoDB
     created_at: datetime = field(default_factory=datetime.utcnow)
     last_activity: datetime = field(default_factory=datetime.utcnow)
 
@@ -227,7 +240,7 @@ class Session:
 
 class SessionManager:
     """
-    Manages chat sessions per user
+    Manages chat sessions per user (New SDK version)
 
     ANSWER TO QUESTION #1: Multi-session Support
 
@@ -235,34 +248,79 @@ class SessionManager:
     - Sessions persist in MongoDB
     - In-memory cache for active sessions
     - TTL-based cleanup
+
+    New SDK Migration Notes:
+    - Uses client.aio.chats.create() for async chat sessions
+    - History format uses UserContent/ModelContent types
+    - Config includes system_instruction, tools, safety_settings
     """
 
     def __init__(
         self,
-        model: genai.GenerativeModel,
+        client: genai.Client,
+        model_name: str,
+        system_instruction: str,
+        tools: list,
         conversation_store: ConversationStore,
         user_store: UserStore,
-        catalog_context: str = "",
+        safety_settings: list = None,
         ttl_seconds: int = 3600
     ):
-        self.model = model
+        self.client = client
+        self.model_name = model_name
+        self.system_instruction = system_instruction
+        self.tools = tools
+        self.safety_settings = safety_settings
         self.conversation_store = conversation_store
         self.user_store = user_store
-        self.catalog_context = catalog_context
         self.ttl = timedelta(seconds=ttl_seconds)
         self._sessions: Dict[str, Session] = {}
         self._lock = asyncio.Lock()
 
+    def _bson_to_sdk_history(self, bson_history: list) -> list:
+        """Convert BSON history to new SDK Content format
+
+        New SDK uses UserContent/ModelContent instead of dicts with 'role' key.
+        """
+        sdk_history = []
+        for entry in bson_history:
+            role = entry.get("role", "user")
+            parts = []
+
+            for part in entry.get("parts", []):
+                if "text" in part:
+                    parts.append(Part.from_text(text=part["text"]))
+                elif "function_call" in part:
+                    fc = part["function_call"]
+                    parts.append(Part.from_function_call(
+                        name=fc.get("name", ""),
+                        args=fc.get("args", {})
+                    ))
+                elif "function_response" in part:
+                    fr = part["function_response"]
+                    parts.append(Part.from_function_response(
+                        name=fr.get("name", ""),
+                        response=fr.get("response", {})
+                    ))
+
+            if parts:
+                if role == "user":
+                    sdk_history.append(UserContent(parts=parts))
+                else:  # model
+                    sdk_history.append(ModelContent(parts=parts))
+
+        return sdk_history
+
     async def get_or_create_session(self, user_id: str, session_id: Optional[str] = None) -> Session:
         """Get existing session or create new one
-        
+
         Args:
             user_id: The user identifier
             session_id: Optional specific session ID for multi-conversation support
         """
         # Use session_id as cache key if provided, otherwise use user_id
         cache_key = session_id if session_id else user_id
-        
+
         async with self._lock:
             # Check in-memory cache
             if cache_key in self._sessions:
@@ -272,37 +330,49 @@ class SessionManager:
 
             # Load from MongoDB
             history, loaded_session_id, summary = await self.conversation_store.load_history(
-                user_id, 
+                user_id,
                 session_id=session_id
             )
-            
+
             # Use provided session_id or auto-generated one
             final_session_id = session_id if session_id else loaded_session_id
 
-            # Convert BSON history to Gemini format
-            gemini_history = self.conversation_store.bson_to_gemini(history)
+            # Convert BSON history to new SDK format
+            sdk_history = self._bson_to_sdk_history(history)
 
             # WEEK 1 FIX: Inject summary as context if exists
             # Previously this was just logged but never actually added to history!
             if summary:
                 # Prepend summary as first user message for context
-                summary_message = {
-                    "role": "user",
-                    "parts": [{"text": f"[წინა საუბრის კონტექსტი: {summary}]"}]
-                }
-                gemini_history = [summary_message] + gemini_history
+                summary_content = UserContent(
+                    parts=[Part.from_text(text=f"[წინა საუბრის კონტექსტი: {summary}]")]
+                )
+                sdk_history = [summary_content] + sdk_history
                 logger.info(f"✅ Summary injected for {user_id}: {summary[:100]}...")
 
-            # Create chat session
-            chat = self.model.start_chat(
-                history=gemini_history,
-                enable_automatic_function_calling=True
+            # Create chat config with system instruction, tools, and safety settings
+            chat_config = GenerateContentConfig(
+                system_instruction=self.system_instruction,
+                tools=self.tools,
+                safety_settings=self.safety_settings if settings.enable_safety_settings else None,
+                temperature=0.7,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=settings.max_output_tokens,
+            )
+
+            # Create async chat session (new SDK)
+            chat = self.client.aio.chats.create(
+                model=self.model_name,
+                history=sdk_history if sdk_history else None,
+                config=chat_config,
             )
 
             session = Session(
                 user_id=user_id,
                 session_id=final_session_id,
-                chat=chat
+                chat=chat,
+                history=history,  # Keep BSON history for MongoDB persistence
             )
 
             self._sessions[cache_key] = session
@@ -320,12 +390,55 @@ class SessionManager:
             "products_recommended": []
         }
 
+        # Get history from chat session (new SDK)
+        try:
+            chat_history = session.chat.get_history()
+            # Convert SDK history back to BSON format for storage
+            bson_history = self._sdk_history_to_bson(chat_history)
+        except Exception as e:
+            logger.warning(f"Could not get chat history: {e}, using tracked history")
+            bson_history = session.history
+
         await self.conversation_store.save_history(
             user_id=session.user_id,
             session_id=session.session_id,
-            history=session.chat.history,
+            history=bson_history,
             metadata=metadata
         )
+
+    def _sdk_history_to_bson(self, sdk_history: list) -> list:
+        """Convert SDK Content history back to BSON format for MongoDB storage"""
+        bson_history = []
+        for content in sdk_history:
+            role = "model" if isinstance(content, ModelContent) else "user"
+            # Handle both UserContent/ModelContent and generic Content
+            if hasattr(content, 'role'):
+                role = content.role
+
+            entry = {"role": role, "parts": []}
+
+            for part in content.parts:
+                if hasattr(part, 'text') and part.text:
+                    entry["parts"].append({"text": part.text})
+                elif hasattr(part, 'function_call') and part.function_call:
+                    entry["parts"].append({
+                        "function_call": {
+                            "name": part.function_call.name,
+                            "args": dict(part.function_call.args) if part.function_call.args else {}
+                        }
+                    })
+                elif hasattr(part, 'function_response') and part.function_response:
+                    entry["parts"].append({
+                        "function_response": {
+                            "name": part.function_response.name,
+                            "response": part.function_response.response
+                        }
+                    })
+
+            if entry["parts"]:
+                bson_history.append(entry)
+
+        return bson_history
 
     async def clear_session(self, user_id: str) -> bool:
         """Clear user session"""
@@ -397,15 +510,8 @@ async def lifespan(app: FastAPI):
     catalog_context = await catalog_loader.get_catalog_context()
     logger.info(f"Loaded catalog: ~{len(catalog_context)//4} tokens")
 
-    # Create Gemini model with tools
-    # ANSWER TO QUESTION #4: Automatic Function Calling Setup
-    model = genai.GenerativeModel(
-        model_name=settings.model_name,
-        tools=GEMINI_TOOLS,
-        system_instruction=SYSTEM_PROMPT + "\n\n" + catalog_context,
-        safety_settings=SAFETY_SETTINGS if settings.enable_safety_settings else None,
-        generation_config=GENERATION_CONFIG,
-    )
+    # Prepare system instruction with catalog context
+    full_system_instruction = SYSTEM_PROMPT + "\n\n" + catalog_context
 
     # Set up tool stores with sync client for avoiding async loop conflicts
     # FIX: Gemini function calling runs sync, so we need sync MongoDB client
@@ -415,19 +521,24 @@ async def lifespan(app: FastAPI):
         sync_client = MongoClient(settings.mongodb_uri)
         sync_db = sync_client[settings.mongodb_database]
         logger.info("Initialized sync MongoDB client for tool functions")
-    
+
     set_stores(
         user_store=user_store,
         db=db_manager.db if settings.mongodb_uri else None,
         sync_db=sync_db
     )
 
-    # Initialize session manager
+    # Initialize session manager (New SDK)
+    # ANSWER TO QUESTION #4: Automatic Function Calling Setup
+    # New SDK passes tools via config when creating chat sessions
     session_manager = SessionManager(
-        model=model,
+        client=gemini_client,
+        model_name=settings.model_name,
+        system_instruction=full_system_instruction,
+        tools=GEMINI_TOOLS,
         conversation_store=conversation_store,
         user_store=user_store,
-        catalog_context=catalog_context,
+        safety_settings=SAFETY_SETTINGS,
         ttl_seconds=settings.session_ttl_seconds
     )
 
@@ -651,19 +762,19 @@ async def health():
 @limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def chat(request: Request, chat_request: ChatRequest):
     """
-    Main chat endpoint
+    Main chat endpoint (New SDK)
 
     ANSWER TO QUESTION #4: Async Support
-    - send_message_async() is production-stable
-    - Automatic function calling handles tool execution
+    - New SDK uses send_message() on async chat sessions (client.aio.chats)
+    - Automatic function calling handles tool execution via config
     """
     try:
         # Get or create session (with optional session_id for multi-conversation support)
         session = await session_manager.get_or_create_session(
-            chat_request.user_id, 
+            chat_request.user_id,
             session_id=chat_request.session_id
         )
-        
+
         # CRITICAL: Set user_id in context for all tool functions
         # This prevents AI from hallucinating wrong user_id when calling get_user_profile()
         _current_user_id.set(chat_request.user_id)
@@ -674,10 +785,10 @@ async def chat(request: Request, chat_request: ChatRequest):
         if any(pattern in message_lower for pattern in SUSPICIOUS_PATTERNS):
             logger.warning(f"Possible prompt injection detected: {chat_request.message[:100]}")
 
-        # Send message with retry
-        # ANSWER TO QUESTION #4: Error handling with retry
+        # Send message with retry (New SDK)
+        # New SDK: session.chat.send_message() is async for aio chat sessions
         response = await call_with_retry(
-            session.chat.send_message_async,
+            session.chat.send_message,
             chat_request.message
         )
 
@@ -757,16 +868,12 @@ async def chat(request: Request, chat_request: ChatRequest):
 @limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def chat_stream(request: Request, stream_request: ChatRequest):
     """
-    SSE Streaming endpoint
+    SSE Streaming endpoint (New SDK)
 
-    ANSWER TO QUESTION #4: Streaming with Gemini SDK
+    ANSWER TO QUESTION #4: Streaming with New Gemini SDK
 
-    Claude streaming:
-        for chunk in response:
-            yield chunk.text
-
-    Gemini streaming:
-        response = await chat.send_message_async(msg, stream=True)
+    New SDK streaming:
+        response = await chat.send_message_stream(msg)
         async for chunk in response:
             yield chunk.text
     """
@@ -774,15 +881,17 @@ async def chat_stream(request: Request, stream_request: ChatRequest):
         try:
             session = await session_manager.get_or_create_session(stream_request.user_id)
 
-            # Stream response
-            response = await session.chat.send_message_async(
-                stream_request.message,
-                stream=True
+            # Set user context for tool functions
+            _current_user_id.set(stream_request.user_id)
+
+            # Stream response (New SDK uses send_message_stream)
+            response = await session.chat.send_message_stream(
+                stream_request.message
             )
 
             full_text = ""
 
-            # ANSWER TO QUESTION #4: Streaming iteration
+            # ANSWER TO QUESTION #4: Streaming iteration (New SDK)
             async for chunk in response:
                 if chunk.text:
                     full_text += chunk.text
