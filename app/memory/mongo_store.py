@@ -73,6 +73,8 @@ CONVERSATIONS COLLECTION SCHEMA:
     "message_count": int,           # For quick filtering
     "token_estimate": int,          # Estimated tokens (for pruning decisions)
     "summary": str | null,          # Summarized context when history was pruned
+    "summary_created_at": datetime | null,  # When summary was generated (WEEK 1)
+    "summary_expires_at": datetime | null,  # Summary TTL: 30 days (WEEK 1)
     "metadata": {
         "language": "ka",           # User language preference
         "last_topic": str,          # Last discussed topic
@@ -129,6 +131,8 @@ class ConversationDocument:
     message_count: int = 0
     token_estimate: int = 0
     summary: Optional[str] = None
+    summary_created_at: Optional[datetime] = None  # WEEK 1: Summary timestamp
+    summary_expires_at: Optional[datetime] = None  # WEEK 1: Summary TTL (30 days)
     metadata: Dict[str, Any] = field(default_factory=lambda: {
         "language": "ka",
         "last_topic": None,
@@ -223,9 +227,10 @@ class DatabaseManager:
             IndexModel([("user_id", ASCENDING), ("created_at", DESCENDING)]),
             # Session lookup: Direct access by session_id
             IndexModel([("session_id", ASCENDING)], unique=True),
-            # TTL index: Auto-delete after 7 days (configurable)
-            # ANSWER TO QUESTION #2: TTL - 7 days retention recommended
+            # TTL index: Auto-delete raw messages after 7 days
             IndexModel([("expires_at", ASCENDING)], expireAfterSeconds=0),
+            # WEEK 1: TTL index for summaries (30 days retention)
+            IndexModel([("summary_expires_at", ASCENDING)], expireAfterSeconds=0),
         ]
 
         # Users indexes
@@ -476,6 +481,9 @@ class ConversationStore:
 
         if summary:
             update_doc["$set"]["summary"] = summary
+            # WEEK 1: Set summary TTL (30 days)
+            update_doc["$set"]["summary_created_at"] = datetime.utcnow()
+            update_doc["$set"]["summary_expires_at"] = datetime.utcnow() + timedelta(days=30)
 
         if metadata:
             update_doc["$set"]["metadata"] = metadata

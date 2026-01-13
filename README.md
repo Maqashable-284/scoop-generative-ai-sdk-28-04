@@ -1,239 +1,117 @@
-# 🤖 Scoop GenAI - სპორტული კვების AI კონსულტანტი
+# 🚀 Scoop GenAI 2026 - Memory Optimization Edition
 
-[![Security Grade](https://img.shields.io/badge/Security-B+-green)](CODE_REVIEW_REPORT.md)
-[![Python](https://img.shields.io/badge/Python-3.11+-blue)](https://python.org)
-[![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
-
-## რა არის ეს პროექტი?
-
-ეს არის **ჭკვიანი ჩატბოტი** რომელიც ეხმარება ადამიანებს სპორტული კვების პროდუქტების შერჩევაში. 
-
-წარმოიდგინე რომ მაღაზიაში მიხვალ და გყავს **პირადი კონსულტანტი** რომელიც:
-- გახსოვს შენი სახელი და ალერგიები
-- იცის ყველა პროდუქტის ფასი და აღწერა
-- გირჩევს რა გჭირდება შენი მიზნის მიხედვით
+**Status**: 🔨 Active Development  
+**Base**: [scoop-genai-project](https://github.com/Maqashable-284/scoop-genai-project)  
+**Purpose**: Memory optimization implementation without breaking production
 
 ---
 
-## 🧠 როგორ მუშაობს?
+## 📋 What's This?
 
-```
-მომხმარებელი: "გამარჯობა, მე ლუკა მქვია, ლაქტოზის აუტანლობა მაქვს"
-     ↓
-   [ჩატბოტი ინახავს ამას მონაცემთა ბაზაში]
-     ↓
-მომხმარებელი: "მირჩიე პროტეინი"
-     ↓
-   [ჩატბოტს ახსოვს რომ ლაქტოზა არ შეიძლება]
-     ↓
-ჩატბოტი: "გირჩევ მცენარეულ პროტეინს - Applied Nutrition Critical Plant..."
-```
+This is a **clean implementation** of the [4-Week Memory Optimization Plan](https://github.com/Maqashable-284/scoop-genai-project/issues/1) for Scoop AI.
+
+**Why a new repo?**
+- ✅ Keep production system stable
+- ✅ Isolated testing environment
+- ✅ Easy rollback if needed
+- ✅ Clear migration path
 
 ---
 
-## 📁 პროექტის სტრუქტურა
+## 🎯 Optimization Goals
 
-```
-scoop-genai-project/
-│
-├── main.py                    ← მთავარი ფაილი (სერვერი)
-├── config.py                  ← პარამეტრები + System Prompt
-├── requirements.txt           ← საჭირო ბიბლიოთეკები
-├── .env                       ← API keys (საიდუმლო!)
-│
-├── prompts/
-│   └── system_prompt.py       ← AI-ის ინსტრუქციები
-│
-└── app/
-    ├── memory/
-    │   └── mongo_store.py     ← მახსოვრობა (MongoDB-ში ინახავს)
-    │
-    ├── catalog/
-    │   └── loader.py          ← პროდუქტების ჩატვირთვა
-    │
-    └── tools/
-        └── user_tools.py      ← Gemini Function Calling Tools
-```
+| Metric | Before | Target | Status |
+|:-------|:-------|:-------|:-------|
+| **Cost/Month** | $360 | $90 | 🔨 In Progress |
+| **Tokens/Message** | 83,000 | 17,000 | 🔨 Week 1-4 |
+| **Memory Retention** | 7 days | 30 days | ✅ Week 1 |
+| **Summary Quality** | Keywords | Semantic | 🔜 Week 3 |
 
 ---
 
-## 🔧 ტექნოლოგიები
+## 📅 Implementation Timeline
 
-| ტექნოლოგია | ვერსია | რისთვის გამოიყენება |
-|------------|--------|---------------------|
-| **Google Gemini 2.5 Flash** | Latest | ხელოვნური ინტელექტი |
-| **FastAPI** | 0.115+ | Python ვებ-სერვერი |
-| **MongoDB** | 7.0+ | მონაცემთა ბაზა |
-| **Motor** | 3.6+ | Async MongoDB driver |
-| **PyMongo** | 4.10+ | Sync MongoDB (Tools) |
-| **slowapi** | 0.1.9 | Rate Limiting |
+### ✅ Week 1: Emergency Fixes (Current)
+- [x] Fix summary injection bug
+- [x] Update summary TTL schema (7→30 days)
+- [ ] Test and verify fixes
+
+### 🔜 Week 2: SDK Migration
+- [ ] `google.generativeai` → `google.genai`
+- [ ] Update all imports and initialization
+- [ ] Comprehensive testing
+
+### 🔜 Week 3: LLM Summarization
+- [ ] Implement `ConversationSummarizer`
+- [ ] Replace keyword extraction
+- [ ] A/B testing
+
+### 🔜 Week 4: Context Caching
+- [ ] Gemini context caching setup
+- [ ] Cache refresh background task
+- [ ] Cost verification
 
 ---
 
-## 🚀 Quick Start
+## 🔧 Development Setup
 
-### 1. დააინსტალირე ბიბლიოთეკები:
 ```bash
+# Clone repository
+git clone https://github.com/Maqashable-284/scoop-genai-project-2026.git
+cd scoop-genai-project-2026
+
+# Install dependencies
 pip install -r requirements.txt
-```
 
-### 2. შექმენი `.env` ფაილი:
-```env
-# Required
-GEMINI_API_KEY=your_gemini_api_key
-MONGODB_URI=mongodb+srv://...
-MONGODB_DATABASE=scoop_db
+# Copy environment
+cp .env.example .env
+# Edit .env with your credentials
 
-# Security (Production)
-ADMIN_TOKEN=your_secure_admin_token
-ALLOWED_ORIGINS=https://yourdomain.com
-DEBUG=false
-```
-
-### 3. გაუშვი სერვერი:
-```bash
-python3 main.py
-```
-
-### 4. შედეგი:
-```
-INFO: Uvicorn running on http://0.0.0.0:8080
+# Run locally
+python main.py
 ```
 
 ---
 
-## 📡 API Endpoints
+## 🧪 Testing
 
-| Endpoint | Method | Description | Auth |
-|----------|--------|-------------|------|
-| `/` | GET | სერვერის სტატუსი | ❌ |
-| `/health` | GET | ჯანმრთელობის შემოწმება | ❌ |
-| `/chat` | POST | მთავარი ჩატი | ❌ |
-| `/chat/stream` | POST | SSE Streaming | ❌ |
-| `/sessions` | GET | აქტიური სესიები | ✅ Admin |
-| `/session/clear` | POST | სესიის წაშლა | ✅ Admin |
-
-### მაგალითი - Chat:
 ```bash
+# Run tests
+pytest tests/ -v
+
+# Verify summary injection
 curl -X POST http://localhost:8080/chat \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "user123", "message": "მინდა პროტეინი"}'
-```
-
-### მაგალითი - Admin Endpoint:
-```bash
-curl -X GET http://localhost:8080/sessions \
-  -H "X-Admin-Token: your_admin_token"
+  -d '{"user_id": "test", "message": "რა ვისაუბრეთ?"}'
 ```
 
 ---
 
-## 🔐 Security Features
+## 📊 Progress Tracking
 
-### Implemented (v1.1.0)
-
-| Feature | Description |
-|---------|-------------|
-| **Rate Limiting** | 30 requests/minute per IP (slowapi) |
-| **Input Validation** | Pydantic validators (user_id, message length) |
-| **Admin Authentication** | X-Admin-Token header required |
-| **Regex Injection Protection** | `re.escape()` on user input |
-| **Error Message Sanitization** | Error IDs instead of stack traces |
-| **CORS Warning** | Logs warning if `*` used in production |
-
-### Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GEMINI_API_KEY` | ✅ | - | Google Gemini API Key |
-| `MONGODB_URI` | ✅ | - | MongoDB Connection String |
-| `MONGODB_DATABASE` | ❌ | scoop_db | Database Name |
-| `ADMIN_TOKEN` | ❌ | - | Admin endpoint auth |
-| `ALLOWED_ORIGINS` | ❌ | `*` | CORS origins (comma-separated) |
-| `DEBUG` | ❌ | false | Debug mode |
+See [CHANGELOG.md](CHANGELOG.md) for detailed progress updates.
 
 ---
 
-## 🧠 მახსოვრობა (Memory)
+## 🔄 Migration to Production
 
-ჩატბოტს **ახსოვს** ყველაფერი:
+Once all 4 weeks are complete and verified:
 
-| რა ახსოვს | მაგალითი |
-|-----------|---------| 
-| სახელი | "მე ლუკა მქვია" |
-| ალერგიები | "ლაქტოზის აუტანლობა მაქვს" |
-| მიზნები | "კუნთის მასა მინდა" |
-| წინა კითხვები | "რა გკითხე?" → ახსოვს! |
-
-### როგორ მუშაობს:
-1. ყოველი მესიჯი ინახება **MongoDB**-ში
-2. როცა ხელახლა წერ, ჩატბოტი ჩატვირთავს ისტორიას
-3. **7 დღის** შემდეგ ავტომატურად იშლება (TTL Index)
+1. Tag release: `git tag v2.0-memory-optimized`
+2. Deploy to staging environment
+3. Run 24h production test
+4. Verify cost reduction
+5. Merge to main repository
 
 ---
 
-## 🛠️ Gemini Function Calling
+## 📚 Documentation
 
-ჩატბოტი იყენებს **Automatic Function Calling**-ს:
-
-| Tool | Description |
-|------|-------------|
-| `get_user_profile` | მომხმარებლის პროფილის წაკითხვა |
-| `update_user_profile` | პროფილის განახლება |
-| `search_products` | პროდუქტების ძებნა |
-| `get_product_details` | დეტალური ინფორმაცია |
+- [Implementation Plan](docs/IMPLEMENTATION_PLAN.md)
+- [Memory System Analysis](docs/MEMORY_ANALYSIS.md)
+- [Testing Guide](docs/TESTING.md)
 
 ---
 
-## 💰 Cost Comparison
-
-| | Claude SDK (ძველი) | Gemini 2.5 Flash |
-|--|-------------------|------------------|
-| თვეში | ~$1,500 | ~$15 |
-| დანაზოგი | - | **99%** |
-
----
-
-## 📊 Recent Updates
-
-### v1.2.1 (2026-01-13) 🐛 Critical Bug Fix
-- 🔒 **CRITICAL**: Fixed user_id hallucination bug in `get_user_profile()`
-  - **Problem**: AI was hallucinating wrong user_ids (e.g., "user_123") when calling tools
-  - **Impact**: Users received OTHER users' profile data (GDPR violation!)
-  - **Solution**: Implemented `ContextVar` for async-safe user_id context
-  - **Result**: Each request has isolated context - impossible to access wrong user's data
-- 🔧 **Data Deletion Fix**: Page reload after deletion to ensure clean frontend state
-- ✅ **Verified**: 7-day TTL, session cleanup, and user isolation all working correctly
-
-### v1.2.0 (2026-01-13)
-- 🛡️ **Gemini 3 Fix**: Defensive check for empty `query` in `search_products` (sporadic bug)
-- 🔒 **Privacy Controls**: GDPR data deletion endpoint `/user/{user_id}/data`
-- 📜 **History Retrieval**: Multi-session support, sidebar with conversation list
-- ✅ **Consent Modal**: User opt-in for data storage
-
-### v1.1.0 (2026-01-13)
-- 🔐 **Security Fixes**: 6 P0 vulnerabilities fixed
-- 🔧 **Bug Fixes**: Async loop conflict, RepeatedComposite serialization
-- ⚡ **Rate Limiting**: slowapi integration
-- ✅ **Input Validation**: Pydantic validators
-
-### v1.0.0 (2026-01-12)
-- 🚀 Initial release
-- 🧠 Gemini 2.5 Flash integration
-- 💾 MongoDB persistence
-- 🔄 Session management
-
----
-
-## 📝 Documentation
-
-- [CODE_REVIEW_REPORT.md](CODE_REVIEW_REPORT.md) - Security Audit Results
-- [docs/RESPONSE_STYLE_GUIDE.md](docs/RESPONSE_STYLE_GUIDE.md) - AI Response Guidelines
-
----
-
-## 👥 Authors
-
-შექმნილია **Scoop.ge**-სთვის
-
-**Repository**: https://github.com/Maqashable-284/scoop-genai-project
+**Original Project**: https://github.com/Maqashable-284/scoop-genai-project  
+**Production Status**: Stable (not affected by this work)

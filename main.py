@@ -282,16 +282,22 @@ class SessionManager:
             # Convert BSON history to Gemini format
             gemini_history = self.conversation_store.bson_to_gemini(history)
 
+            # WEEK 1 FIX: Inject summary as context if exists
+            # Previously this was just logged but never actually added to history!
+            if summary:
+                # Prepend summary as first user message for context
+                summary_message = {
+                    "role": "user",
+                    "parts": [{"text": f"[წინა საუბრის კონტექსტი: {summary}]"}]
+                }
+                gemini_history = [summary_message] + gemini_history
+                logger.info(f"✅ Summary injected for {user_id}: {summary[:100]}...")
+
             # Create chat session
             chat = self.model.start_chat(
                 history=gemini_history,
                 enable_automatic_function_calling=True
             )
-
-            # If we have a summary from pruned history, inject it
-            if summary and not history:
-                # Add summary as context
-                logger.info(f"Injecting summary for {user_id}: {summary[:100]}...")
 
             session = Session(
                 user_id=user_id,
