@@ -846,7 +846,8 @@ async def chat(request: Request, chat_request: ChatRequest):
     except Exception as e:
         # Generate error ID for log correlation
         error_id = uuid.uuid4().hex[:8]
-        logger.error(f"Chat error [{error_id}]: {e}", exc_info=True)
+        logger.error(f"Chat error [{error_id}]: {type(e).__name__}: {e}", exc_info=True)
+        logger.error(f"Full traceback for error [{error_id}]:", exc_info=True)
 
         # Check for safety block
         error_type = type(e).__name__

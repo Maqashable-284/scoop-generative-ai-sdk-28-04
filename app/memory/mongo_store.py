@@ -312,20 +312,21 @@ class ConversationStore:
 
     def gemini_to_bson(self, history: List[Content]) -> List[Dict[str, Any]]:
         """
-        ANSWER TO QUESTION #1: chat.history format (Updated for New SDK)
+        ANSWER TO QUESTION #1: chat.history format
 
         Convert Gemini Content objects to BSON-storable format
+        
+        WEEK 2 FIX: New SDK's get_history() returns dicts, not Content objects!
+        Handle both formats for compatibility.
 
-        New SDK history structure uses UserContent/ModelContent:
+        Gemini history structure:
         [
-            UserContent(parts=[Part(text="გამარჯობა")]),
-            ModelContent(parts=[
+            Content(role="user", parts=[Part(text="გამარჯობა")]),
+            Content(role="model", parts=[
                 Part(text="გამარჯობა! რით დაგეხმარო?"),
                 Part(function_call=FunctionCall(name="search", args={...}))
             ])
         ]
-
-        Also handles old SDK format with Content(role=...) for backwards compatibility.
         """
         def proto_to_native(obj):
             """Recursively convert protobuf types to native Python types"""
@@ -343,6 +344,20 @@ class ConversationStore:
         bson_history = []
 
         for content in history:
+            # WEEK 2 FIX: Handle dict format from get_history()
+            if isinstance(content, dict):
+                # Already in dict format, just ensure it's native Python
+                entry = {
+                    "role": content.get("role", "user"),
+                    "parts": content.get("parts", [])
+                }
+                # Convert any nested protobuf objects
+                entry["parts"] = proto_to_native(entry["parts"])
+                if entry["parts"]: # Only add if there are parts
+                    bson_history.append(entry)
+                continue
+            
+            # Original logic for Content objects
             # Determine role from content type (new SDK) or role attribute (old SDK)
             if hasattr(content, 'role'):
                 role = content.role
@@ -364,7 +379,7 @@ class ConversationStore:
                 elif hasattr(part, "function_call") and part.function_call:
                     # Use proto_to_native for robust conversion
                     args_dict = proto_to_native(part.function_call.args) if part.function_call.args else {}
-
+                    
                     entry["parts"].append({
                         "function_call": {
                             "name": part.function_call.name,
@@ -374,7 +389,7 @@ class ConversationStore:
                 elif hasattr(part, "function_response") and part.function_response:
                     # Use proto_to_native for robust conversion
                     response_data = proto_to_native(part.function_response.response) if part.function_response.response else None
-
+                    
                     entry["parts"].append({
                         "function_response": {
                             "name": part.function_response.name,
