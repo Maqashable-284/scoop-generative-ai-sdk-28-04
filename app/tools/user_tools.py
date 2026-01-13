@@ -191,7 +191,7 @@ def update_user_profile(
 # =============================================================================
 
 def search_products(
-    query: str,
+    query: str = "",  # Default empty string for Gemini 3 sporadic bug
     category: Optional[str] = None,
     max_price: Optional[float] = None,
     in_stock_only: bool = True
@@ -214,6 +214,14 @@ def search_products(
     Returns:
         dict with products list and count
     """
+    # Defensive check: Gemini 3 sometimes sends empty query
+    if not query or not query.strip():
+        return {
+            "error": "საძიებო ტექსტი საჭიროა",
+            "products": [],
+            "count": 0
+        }
+
     # Use sync MongoDB client to avoid async loop conflicts
     if _sync_db is None:
         # Return mock data
@@ -396,12 +404,20 @@ async def async_get_user_profile(user_id: str) -> dict:
 
 
 async def async_search_products(
-    query: str,
+    query: str = "",  # Default empty string for Gemini 3 sporadic bug
     category: Optional[str] = None,
     max_price: Optional[float] = None,
     in_stock_only: bool = True
 ) -> dict:
     """Async version of search_products"""
+    # Defensive check: Gemini 3 sometimes sends empty query
+    if not query or not query.strip():
+        return {
+            "error": "საძიებო ტექსტი საჭიროა",
+            "products": [],
+            "count": 0
+        }
+
     if _db is None:
         return {"products": [], "count": 0, "query": query}
 

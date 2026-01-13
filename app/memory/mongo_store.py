@@ -542,6 +542,81 @@ class ConversationStore:
 
         return f"წინა საუბარში განხილული: {', '.join(unique_topics) if unique_topics else 'ზოგადი კითხვები'}"
 
+    # -------------------------------------------------------------------------
+    # History Retrieval for Frontend
+    # -------------------------------------------------------------------------
+
+    async def get_user_sessions(self, user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """
+        Get list of user's recent sessions for sidebar display.
+        
+        Returns list of session summaries with title extracted from first message.
+        """
+        cursor = self.collection.find(
+            {"user_id": user_id},
+            {
+                "session_id": 1, 
+                "created_at": 1, 
+                "updated_at": 1, 
+                "message_count": 1, 
+                "history": {"$slice": 1}  # Only first message for title
+            }
+        ).sort("updated_at", DESCENDING).limit(limit)
+        
+        sessions = []
+        async for doc in cursor:
+            # Extract title from first user message
+            title = "ახალი საუბარი"
+            if doc.get("history"):
+                first_msg = doc["history"][0]
+                if first_msg.get("role") == "user":
+                    for part in first_msg.get("parts", []):
+                        if "text" in part:
+                            text = part["text"]
+                            title = text[:30] + "..." if len(text) > 30 else text
+                            break
+            
+            sessions.append({
+                "session_id": doc["session_id"],
+                "title": title,
+                "created_at": doc["created_at"].isoformat() if doc.get("created_at") else None,
+                "updated_at": doc["updated_at"].isoformat() if doc.get("updated_at") else None,
+                "message_count": doc.get("message_count", 0)
+            })
+        
+        return sessions
+
+    async def get_session_history(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        Get formatted message history for a specific session.
+        
+        Converts internal BSON format to frontend-friendly format:
+        [{"role": "user"|"assistant", "content": "..."}]
+        """
+        doc = await self.collection.find_one({"session_id": session_id})
+        if not doc:
+            return []
+        
+        messages = []
+        for entry in doc.get("history", []):
+            # Convert 'model' role to 'assistant' for frontend
+            role = "assistant" if entry["role"] == "model" else entry["role"]
+            
+            # Extract text from parts
+            text = ""
+            for part in entry.get("parts", []):
+                if "text" in part:
+                    text = part["text"]
+                    break
+            
+            if text:
+                messages.append({
+                    "role": role,
+                    "content": text
+                })
+        
+        return messages
+
     async def clear_session(self, session_id: str) -> bool:
         """Delete a specific session"""
         result = await self.collection.delete_one({"session_id": session_id})
@@ -665,3 +740,8 @@ class UserStore:
             },
             upsert=True
         )
+
+    async def delete_user(self, user_id: str) -> bool:
+        """Delete user profile (GDPR Right to Erasure)"""
+        result = await self.collection.delete_one({"user_id": user_id})
+        return result.deleted_count > 0

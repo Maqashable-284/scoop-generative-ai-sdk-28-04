@@ -196,6 +196,12 @@ curl -X GET http://localhost:8080/sessions \
 
 ## 📊 Recent Updates
 
+### v1.2.0 (2026-01-13)
+- 🛡️ **Gemini 3 Fix**: Defensive check for empty `query` in `search_products` (sporadic bug)
+- 🔒 **Privacy Controls**: GDPR data deletion endpoint `/user/{user_id}/data`
+- 📜 **History Retrieval**: Multi-session support, sidebar with conversation list
+- ✅ **Consent Modal**: User opt-in for data storage
+
 ### v1.1.0 (2026-01-13)
 - 🔐 **Security Fixes**: 6 P0 vulnerabilities fixed
 - 🔧 **Bug Fixes**: Async loop conflict, RepeatedComposite serialization

@@ -252,17 +252,31 @@ class SessionManager:
         self._sessions: Dict[str, Session] = {}
         self._lock = asyncio.Lock()
 
-    async def get_or_create_session(self, user_id: str) -> Session:
-        """Get existing session or create new one"""
+    async def get_or_create_session(self, user_id: str, session_id: Optional[str] = None) -> Session:
+        """Get existing session or create new one
+        
+        Args:
+            user_id: The user identifier
+            session_id: Optional specific session ID for multi-conversation support
+        """
+        # Use session_id as cache key if provided, otherwise use user_id
+        cache_key = session_id if session_id else user_id
+        
         async with self._lock:
             # Check in-memory cache
-            if user_id in self._sessions:
-                session = self._sessions[user_id]
+            if cache_key in self._sessions:
+                session = self._sessions[cache_key]
                 session.update_activity()
                 return session
 
             # Load from MongoDB
-            history, session_id, summary = await self.conversation_store.load_history(user_id)
+            history, loaded_session_id, summary = await self.conversation_store.load_history(
+                user_id, 
+                session_id=session_id
+            )
+            
+            # Use provided session_id or auto-generated one
+            final_session_id = session_id if session_id else loaded_session_id
 
             # Convert BSON history to Gemini format
             gemini_history = self.conversation_store.bson_to_gemini(history)
@@ -280,11 +294,11 @@ class SessionManager:
 
             session = Session(
                 user_id=user_id,
-                session_id=session_id,
+                session_id=final_session_id,
                 chat=chat
             )
 
-            self._sessions[user_id] = session
+            self._sessions[cache_key] = session
             return session
 
     async def save_session(self, session: Session) -> None:
@@ -473,6 +487,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 class ChatRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=128)
     message: str = Field(..., min_length=1, max_length=4000)
+    session_id: Optional[str] = Field(None, max_length=128)  # For multi-conversation support
 
     @field_validator('user_id')
     @classmethod
@@ -636,8 +651,11 @@ async def chat(request: Request, chat_request: ChatRequest):
     - Automatic function calling handles tool execution
     """
     try:
-        # Get or create session
-        session = await session_manager.get_or_create_session(chat_request.user_id)
+        # Get or create session (with optional session_id for multi-conversation support)
+        session = await session_manager.get_or_create_session(
+            chat_request.user_id, 
+            session_id=chat_request.session_id
+        )
 
         # Prompt injection detection (logging only, no blocking)
         message_lower = chat_request.message.lower()
@@ -809,6 +827,86 @@ async def list_sessions(authorized: bool = Depends(verify_admin_token)):
             "last_activity": session.last_activity.isoformat()
         })
     return {"sessions": sessions, "count": len(sessions)}
+
+
+# =============================================================================
+# HISTORY RETRIEVAL ENDPOINTS (Public - for frontend sidebar)
+# =============================================================================
+
+@app.get("/sessions/{user_id}")
+async def get_user_sessions(user_id: str):
+    """
+    Get user's conversation sessions for sidebar display.
+    
+    Returns list of sessions with title and metadata.
+    """
+    # Validate user_id format
+    if not re.match(r'^[a-zA-Z0-9_-]+$', user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+    
+    sessions = await conversation_store.get_user_sessions(user_id, limit=20)
+    return {"sessions": sessions}
+
+
+@app.get("/session/{session_id}/history")
+async def get_session_history(session_id: str):
+    """
+    Get message history for a specific session.
+    
+    Returns formatted messages ready for frontend rendering.
+    """
+    # Validate session_id format
+    if not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
+        raise HTTPException(status_code=400, detail="Invalid session_id format")
+    
+    messages = await conversation_store.get_session_history(session_id)
+    return {"messages": messages, "session_id": session_id}
+
+
+# =============================================================================
+# PRIVACY CONTROLS (GDPR Compliance)
+# =============================================================================
+
+@app.delete("/user/{user_id}/data")
+async def delete_user_data(user_id: str):
+    """
+    Delete all user data (GDPR Right to Erasure).
+    
+    Removes:
+    - All conversation history
+    - User profile and preferences
+    - Active sessions from memory
+    """
+    # Validate user_id format
+    if not re.match(r'^[a-zA-Z0-9_-]+$', user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+    
+    try:
+        # Delete all conversations
+        deleted_sessions = await conversation_store.clear_user_sessions(user_id)
+        
+        # Delete user profile
+        deleted_user = await user_store.delete_user(user_id)
+        
+        # Clear from memory cache
+        if session_manager:
+            # Remove any cached sessions for this user
+            keys_to_remove = [k for k in session_manager._sessions.keys() 
+                           if k == user_id or k.startswith(f"{user_id}_")]
+            for key in keys_to_remove:
+                session_manager._sessions.pop(key, None)
+        
+        logger.info(f"Deleted data for user {user_id}: {deleted_sessions} sessions")
+        
+        return {
+            "success": True,
+            "deleted_sessions": deleted_sessions,
+            "deleted_profile": deleted_user,
+            "message": "ყველა მონაცემი წაიშალა"
+        }
+    except Exception as e:
+        logger.error(f"Error deleting user data: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete user data")
 
 
 # =============================================================================
