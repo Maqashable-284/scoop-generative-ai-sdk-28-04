@@ -86,6 +86,9 @@ from app.tools.user_tools import (
     _current_user_id,  # ContextVar for setting current user
 )
 
+# Week 4: Context Caching
+from app.cache.context_cache import ContextCacheManager, CacheRefreshTask
+
 # Rate Limiting
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -253,6 +256,10 @@ class SessionManager:
     - Uses client.aio.chats.create() for async chat sessions
     - History format uses UserContent/ModelContent types
     - Config includes system_instruction, tools, safety_settings
+
+    Week 4 Update:
+    - Supports context caching for 85% token savings
+    - When cache_manager provided, uses cached_content instead of system_instruction
     """
 
     def __init__(
@@ -264,7 +271,8 @@ class SessionManager:
         conversation_store: ConversationStore,
         user_store: UserStore,
         safety_settings: list = None,
-        ttl_seconds: int = 3600
+        ttl_seconds: int = 3600,
+        cache_manager: Optional[ContextCacheManager] = None,  # Week 4
     ):
         self.client = client
         self.model_name = model_name
@@ -276,6 +284,7 @@ class SessionManager:
         self.ttl = timedelta(seconds=ttl_seconds)
         self._sessions: Dict[str, Session] = {}
         self._lock = asyncio.Lock()
+        self.cache_manager = cache_manager  # Week 4: Context caching
 
     def _bson_to_sdk_history(self, bson_history: list) -> list:
         """Convert BSON history to new SDK Content format
@@ -350,23 +359,56 @@ class SessionManager:
                 sdk_history = [summary_content] + sdk_history
                 logger.info(f"✅ Summary injected for {user_id}: {summary[:100]}...")
 
-            # Create chat config with system instruction, tools, and safety settings
-            chat_config = GenerateContentConfig(
-                system_instruction=self.system_instruction,
-                tools=self.tools,
-                safety_settings=self.safety_settings if settings.enable_safety_settings else None,
-                temperature=0.7,
-                top_p=0.95,
-                top_k=40,
-                max_output_tokens=settings.max_output_tokens,
+            # Week 4: Check if context caching is available
+            use_cached_context = (
+                self.cache_manager is not None and
+                self.cache_manager.is_cache_valid
             )
 
-            # Create async chat session (new SDK)
-            chat = self.client.aio.chats.create(
-                model=self.model_name,
-                history=sdk_history if sdk_history else None,
-                config=chat_config,
-            )
+            if use_cached_context:
+                # Use cached context - 85% token savings
+                cached_content_name = self.cache_manager.get_cached_content_name()
+                logger.info(f"🚀 Using cached context: {cached_content_name}")
+
+                # Config without system_instruction (it's in the cache)
+                chat_config = GenerateContentConfig(
+                    tools=self.tools,
+                    safety_settings=self.safety_settings if settings.enable_safety_settings else None,
+                    temperature=0.7,
+                    top_p=0.95,
+                    top_k=40,
+                    max_output_tokens=settings.max_output_tokens,
+                )
+
+                # Create chat with cached content
+                chat = self.client.aio.chats.create(
+                    model=self.model_name,
+                    history=sdk_history if sdk_history else None,
+                    config=chat_config,
+                    cached_content=cached_content_name,
+                )
+            else:
+                # Fallback: include full system instruction (no caching)
+                if self.cache_manager:
+                    self.cache_manager.record_cache_miss()
+                    logger.warning("⚠️ Context cache unavailable, using full system instruction")
+
+                chat_config = GenerateContentConfig(
+                    system_instruction=self.system_instruction,
+                    tools=self.tools,
+                    safety_settings=self.safety_settings if settings.enable_safety_settings else None,
+                    temperature=0.7,
+                    top_p=0.95,
+                    top_k=40,
+                    max_output_tokens=settings.max_output_tokens,
+                )
+
+                # Create async chat session (new SDK)
+                chat = self.client.aio.chats.create(
+                    model=self.model_name,
+                    history=sdk_history if sdk_history else None,
+                    config=chat_config,
+                )
 
             session = Session(
                 user_id=user_id,
@@ -479,6 +521,8 @@ conversation_store = ConversationStore(
 user_store = UserStore()
 catalog_loader: Optional[CatalogLoader] = None
 session_manager: Optional[SessionManager] = None
+context_cache_manager: Optional[ContextCacheManager] = None  # Week 4
+cache_refresh_task: Optional[CacheRefreshTask] = None  # Week 4
 
 
 # =============================================================================
@@ -488,7 +532,7 @@ session_manager: Optional[SessionManager] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global catalog_loader, session_manager
+    global catalog_loader, session_manager, context_cache_manager, cache_refresh_task
 
     # Startup
     logger.info("Starting Scoop GenAI server...")
@@ -528,6 +572,42 @@ async def lifespan(app: FastAPI):
         sync_db=sync_db
     )
 
+    # Week 4: Initialize context caching for 85% token savings
+    if settings.enable_context_caching:
+        logger.info("🚀 Week 4: Initializing context caching...")
+        context_cache_manager = ContextCacheManager(
+            client=gemini_client,
+            model_name=settings.model_name,
+            cache_ttl_minutes=settings.context_cache_ttl_minutes,
+        )
+
+        # Create initial cache
+        cache_success = await context_cache_manager.create_cache(
+            system_instruction=SYSTEM_PROMPT,
+            catalog_context=catalog_context,
+            display_name="scoop-context-cache"
+        )
+
+        if cache_success:
+            logger.info(
+                f"✅ Context cache created successfully "
+                f"(~{context_cache_manager.metrics.cached_token_count} tokens cached)"
+            )
+
+            # Start background cache refresh task
+            cache_refresh_task = CacheRefreshTask(
+                cache_manager=context_cache_manager,
+                refresh_before_expiry_minutes=settings.cache_refresh_before_expiry_minutes,
+                check_interval_minutes=settings.cache_check_interval_minutes,
+            )
+            await cache_refresh_task.start()
+        else:
+            logger.warning("⚠️ Context cache creation failed, running without caching")
+            context_cache_manager = None
+    else:
+        logger.info("Context caching disabled via settings")
+        context_cache_manager = None
+
     # Initialize session manager (New SDK)
     # ANSWER TO QUESTION #4: Automatic Function Calling Setup
     # New SDK passes tools via config when creating chat sessions
@@ -539,7 +619,8 @@ async def lifespan(app: FastAPI):
         conversation_store=conversation_store,
         user_store=user_store,
         safety_settings=SAFETY_SETTINGS,
-        ttl_seconds=settings.session_ttl_seconds
+        ttl_seconds=settings.session_ttl_seconds,
+        cache_manager=context_cache_manager,  # Week 4
     )
 
     # Start cleanup task
@@ -549,6 +630,15 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down...")
+
+    # Stop cache refresh task
+    if cache_refresh_task:
+        await cache_refresh_task.stop()
+
+    # Delete context cache
+    if context_cache_manager:
+        await context_cache_manager.delete_cache()
+
     cleanup_task.cancel()
     try:
         await cleanup_task
@@ -751,11 +841,85 @@ async def root():
 async def health():
     """Health check endpoint"""
     db_status = await db_manager.ping() if settings.mongodb_uri else True
+
+    # Week 4: Include cache status
+    cache_status = "disabled"
+    if context_cache_manager:
+        cache_status = "active" if context_cache_manager.is_cache_valid else "expired"
+
     return {
         "status": "healthy" if db_status else "degraded",
         "database": "connected" if db_status else "disconnected",
-        "model": settings.model_name
+        "model": settings.model_name,
+        "context_cache": cache_status,  # Week 4
     }
+
+
+@app.get("/cache/metrics")
+async def cache_metrics(authorized: bool = Depends(verify_admin_token)):
+    """
+    Week 4: Get context cache metrics and cost savings.
+
+    Returns:
+        - Cache status (active/expired/disabled)
+        - Cached token count
+        - Cache hits/misses
+        - Estimated token savings
+        - Estimated cost savings in USD
+    """
+    if not context_cache_manager:
+        return {
+            "enabled": False,
+            "message": "Context caching is disabled"
+        }
+
+    metrics = await context_cache_manager.get_cache_info()
+    metrics["enabled"] = True
+
+    # Add cache hit rate
+    total_requests = metrics.get("cache_hits", 0) + metrics.get("cache_misses", 0)
+    if total_requests > 0:
+        metrics["cache_hit_rate"] = round(metrics["cache_hits"] / total_requests * 100, 2)
+    else:
+        metrics["cache_hit_rate"] = 0
+
+    return metrics
+
+
+@app.post("/cache/refresh")
+async def refresh_cache(authorized: bool = Depends(verify_admin_token)):
+    """
+    Week 4: Manually refresh the context cache.
+
+    Use when:
+    - Product catalog has been updated
+    - Cache needs to be regenerated
+    """
+    if not context_cache_manager:
+        raise HTTPException(status_code=400, detail="Context caching is disabled")
+
+    if not catalog_loader:
+        raise HTTPException(status_code=500, detail="Catalog loader not initialized")
+
+    # Get fresh catalog context
+    catalog_context = await catalog_loader.get_catalog_context(force_refresh=True)
+
+    # Refresh cache
+    success = await context_cache_manager.create_cache(
+        system_instruction=SYSTEM_PROMPT,
+        catalog_context=catalog_context,
+        display_name=f"scoop-context-cache-manual-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    )
+
+    if success:
+        return {
+            "success": True,
+            "message": "Cache refreshed successfully",
+            "cached_tokens": context_cache_manager.metrics.cached_token_count,
+            "expires_at": context_cache_manager.metrics.cache_expires_at.isoformat()
+        }
+    else:
+        raise HTTPException(status_code=500, detail="Failed to refresh cache")
 
 
 @app.post("/chat", response_model=ChatResponse)

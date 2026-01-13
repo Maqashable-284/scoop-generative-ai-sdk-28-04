@@ -64,6 +64,24 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("MAX_OUTPUT_TOKENS", "8192"))
     )
 
+    # Week 4: Context Caching Settings
+    # Enables Gemini context caching for ~85% token cost reduction
+    enable_context_caching: bool = Field(
+        default_factory=lambda: os.getenv("ENABLE_CONTEXT_CACHING", "true").lower() == "true"
+    )
+    # Cache TTL in minutes (1-60, default 60)
+    context_cache_ttl_minutes: int = Field(
+        default_factory=lambda: int(os.getenv("CONTEXT_CACHE_TTL_MINUTES", "60"))
+    )
+    # Minutes before expiry to refresh cache (default 10)
+    cache_refresh_before_expiry_minutes: int = Field(
+        default_factory=lambda: int(os.getenv("CACHE_REFRESH_BEFORE_EXPIRY_MINUTES", "10"))
+    )
+    # Interval in minutes to check cache health (default 5)
+    cache_check_interval_minutes: int = Field(
+        default_factory=lambda: int(os.getenv("CACHE_CHECK_INTERVAL_MINUTES", "5"))
+    )
+
     class Config:
         env_file = ".env"
 
