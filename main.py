@@ -385,7 +385,6 @@ class SessionManager:
                     model=self.model_name,
                     history=sdk_history if sdk_history else None,
                     config=chat_config,
-                    cached_content=cached_content_name,
                 )
             else:
                 # Fallback: include full system instruction (no caching)
