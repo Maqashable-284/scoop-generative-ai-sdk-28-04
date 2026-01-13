@@ -29,7 +29,7 @@ class Settings(BaseModel):
     # Question #5: Rate Limits for Gemini 2.5 Flash:
     # - Free tier: 15 RPM, 1M TPM, 1500 RPD
     # - Paid tier: 2000 RPM, 4M TPM (standard), scales with billing
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3-flash-preview"
 
     # Session & Memory
     # Question #1: Memory Persistence - Session TTL
@@ -55,6 +55,14 @@ class Settings(BaseModel):
 
     # Security: Admin token for protected endpoints
     admin_token: Optional[str] = Field(default_factory=lambda: os.getenv("ADMIN_TOKEN"))
+
+    # Gemini 3 Compatibility Settings
+    gemini_timeout_seconds: int = Field(
+        default_factory=lambda: int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
+    )
+    max_output_tokens: int = Field(
+        default_factory=lambda: int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
+    )
 
     class Config:
         env_file = ".env"

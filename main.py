@@ -128,12 +128,12 @@ SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
 }
 
-# Generation config
+# Generation config - max_output_tokens from settings for Gemini 3 compatibility
 GENERATION_CONFIG = GenerationConfig(
     temperature=0.7,
     top_p=0.95,
     top_k=40,
-    max_output_tokens=2048,
+    max_output_tokens=settings.max_output_tokens,  # Default 4096 for longer responses
 )
 
 
@@ -159,6 +159,11 @@ RETRY_EXCEPTIONS = (
 )
 
 
+class GeminiTimeoutError(Exception):
+    """Raised when Gemini API call times out"""
+    pass
+
+
 async def call_with_retry(
     func,
     *args,
@@ -170,12 +175,21 @@ async def call_with_retry(
     ANSWER TO QUESTION #5: Retry Logic for 429 errors
 
     Exponential backoff: 2s, 4s, 8s, 16s
+    Now wrapped with timeout for Gemini 3 compatibility.
     """
     last_exception = None
 
     for attempt in range(max_retries):
         try:
-            return await func(*args, **kwargs)
+            # Wrap with timeout for Gemini 3 compatibility
+            return await asyncio.wait_for(
+                func(*args, **kwargs),
+                timeout=settings.gemini_timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            raise GeminiTimeoutError(
+                f"Gemini API timed out after {settings.gemini_timeout_seconds}s"
+            )
         except Exception as e:
             error_type = type(e).__name__
 
@@ -637,8 +651,24 @@ async def chat(request: Request, chat_request: ChatRequest):
             chat_request.message
         )
 
-        # Extract text
-        response_text = response.text
+        # Extract text safely (Gemini 3 may return empty response)
+        try:
+            response_text = response.text
+        except ValueError as e:
+            # Gemini returned empty response - provide fallback
+            logger.warning(f"Empty Gemini response for user {chat_request.user_id}: {e}")
+            return ChatResponse(
+                response_text_geo=(
+                    "სამწუხაროდ, პასუხის გენერირება ვერ მოხერხდა. "
+                    "გთხოვთ სცადოთ მარტივი კითხვა."
+                ),
+                quick_replies=[
+                    {"title": "რა არის კრეატინი?", "payload": "რა არის კრეატინი?"},
+                    {"title": "რომელი პროტეინი ჯობია?", "payload": "რომელი პროტეინი ჯობია?"},
+                ],
+                success=False,
+                error="empty_response"
+            )
 
         # Parse quick replies
         clean_text, quick_replies = parse_quick_replies(response_text)
@@ -653,6 +683,23 @@ async def chat(request: Request, chat_request: ChatRequest):
             response_text_geo=clean_text,
             quick_replies=quick_replies,
             success=True
+        )
+
+    except GeminiTimeoutError as e:
+        # Gemini 3 compatibility: Handle timeout gracefully
+        logger.warning(f"Gemini timeout for user {chat_request.user_id}: {e}")
+        return ChatResponse(
+            response_text_geo=(
+                "კითხვა ძალიან რთულია და დამუშავებას დიდი დრო სჭირდება. "
+                "გთხოვთ დაყავით რამდენიმე მარტივ კითხვად. "
+                "მაგალითად: ჯერ იკითხეთ პროტეინზე, შემდეგ კრეატინზე."
+            ),
+            quick_replies=[
+                {"title": "რომელი პროტეინი ჯობია ვეგეტარიანელისთვის?", "payload": "რომელი პროტეინი ჯობია ვეგეტარიანელისთვის?"},
+                {"title": "რა ღირს კრეატინი?", "payload": "რა ღირს კრეატინი?"},
+            ],
+            success=False,
+            error="timeout"
         )
 
     except Exception as e:
