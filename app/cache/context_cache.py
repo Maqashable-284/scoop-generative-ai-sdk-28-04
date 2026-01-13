@@ -155,14 +155,14 @@ class ContextCacheManager:
                 cached_contents = [
                     types.Content(
                         role="user",
-                        parts=[types.Part.from_text(
-                            f"აქ არის Scoop.ge პროდუქტების კატალოგი:\n\n{catalog_context}"
+                        parts=[types.Part(
+                            text=f"აქ არის Scoop.ge პროდუქტების კატალოგი:\n\n{catalog_context}"
                         )]
                     ),
                     types.Content(
                         role="model",
-                        parts=[types.Part.from_text(
-                            "გავიგე. მზად ვარ დაგეხმარო პროდუქტების შერჩევაში Scoop.ge კატალოგიდან."
+                        parts=[types.Part(
+                            text="გავიგე. მზად ვარ დაგეხმარო პროდუქტების შერჩევაში Scoop.ge კატალოგიდან."
                         )]
                     )
                 ]
