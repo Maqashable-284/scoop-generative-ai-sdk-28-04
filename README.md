@@ -196,6 +196,15 @@ curl -X GET http://localhost:8080/sessions \
 
 ## 📊 Recent Updates
 
+### v1.2.1 (2026-01-13) 🐛 Critical Bug Fix
+- 🔒 **CRITICAL**: Fixed user_id hallucination bug in `get_user_profile()`
+  - **Problem**: AI was hallucinating wrong user_ids (e.g., "user_123") when calling tools
+  - **Impact**: Users received OTHER users' profile data (GDPR violation!)
+  - **Solution**: Implemented `ContextVar` for async-safe user_id context
+  - **Result**: Each request has isolated context - impossible to access wrong user's data
+- 🔧 **Data Deletion Fix**: Page reload after deletion to ensure clean frontend state
+- ✅ **Verified**: 7-day TTL, session cleanup, and user isolation all working correctly
+
 ### v1.2.0 (2026-01-13)
 - 🛡️ **Gemini 3 Fix**: Defensive check for empty `query` in `search_products` (sporadic bug)
 - 🔒 **Privacy Controls**: GDPR data deletion endpoint `/user/{user_id}/data`

@@ -79,6 +79,7 @@ from app.tools.user_tools import (
     get_product_details,
     set_stores,
     GEMINI_TOOLS,
+    _current_user_id,  # ContextVar for setting current user
 )
 
 # Rate Limiting
@@ -656,6 +657,11 @@ async def chat(request: Request, chat_request: ChatRequest):
             chat_request.user_id, 
             session_id=chat_request.session_id
         )
+        
+        # CRITICAL: Set user_id in context for all tool functions
+        # This prevents AI from hallucinating wrong user_id when calling get_user_profile()
+        _current_user_id.set(chat_request.user_id)
+        logger.info(f"🔍 Set context: user_id={chat_request.user_id}")
 
         # Prompt injection detection (logging only, no blocking)
         message_lower = chat_request.message.lower()
@@ -890,11 +896,17 @@ async def delete_user_data(user_id: str):
         
         # Clear from memory cache
         if session_manager:
-            # Remove any cached sessions for this user
-            keys_to_remove = [k for k in session_manager._sessions.keys() 
-                           if k == user_id or k.startswith(f"{user_id}_")]
+            # CRITICAL FIX: Cache keys use session_id, not user_id
+            # Must check Session.user_id property, not cache key pattern
+            keys_to_remove = []
+            for cache_key, session in list(session_manager._sessions.items()):
+                if session.user_id == user_id:
+                    keys_to_remove.append(cache_key)
+            
             for key in keys_to_remove:
                 session_manager._sessions.pop(key, None)
+            
+            logger.info(f"Cleared {len(keys_to_remove)} cached sessions for user {user_id}")
         
         logger.info(f"Deleted data for user {user_id}: {deleted_sessions} sessions")
         

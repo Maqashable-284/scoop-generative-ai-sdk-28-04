@@ -21,13 +21,19 @@ Function Schema Requirements:
 - Parameter descriptions from docstring
 
 FIX: Using sync PyMongo client instead of async Motor to avoid event loop conflicts
+FIX: Using ContextVar for user_id to prevent AI hallucination of wrong user_id
 """
 import re
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
+from contextvars import ContextVar
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Global context variable for current user_id (async-safe)
+# This is set in the chat endpoint and automatically available to all tool functions
+_current_user_id: ContextVar[Optional[str]] = ContextVar('current_user_id', default=None)
 
 # Store references (set by main.py on startup)
 _user_store = None
@@ -67,9 +73,12 @@ def set_stores(user_store=None, product_service=None, db=None, sync_db=None):
 # USER PROFILE TOOLS
 # =============================================================================
 
-def get_user_profile(user_id: str) -> dict:
+def get_user_profile() -> dict:
     """
-    Retrieve user profile including name, allergies, and preferences.
+    Retrieve the CURRENT user's profile including name, allergies, and preferences.
+    
+    This automatically gets the profile for whoever is currently chatting.
+    No need to specify user_id - it's automatically determined from the active session.
 
     Call this when you need to:
     - Check user's allergies before recommending products
@@ -77,14 +86,29 @@ def get_user_profile(user_id: str) -> dict:
     - See user's fitness goals
     - Check purchase history
 
-    Args:
-        user_id: The unique identifier for the user
-
     Returns:
-        dict with keys: name, allergies, goals, preferences, stats
+        dict with keys: error, name, allergies, goals, preferences, stats
     """
+    # Get user_id from context (set by chat endpoint)
+    user_id = _current_user_id.get(None)
+    
+    # DIAGNOSTIC: Log function call
+    logger.info(f"🔍 get_user_profile CALLED (auto user_id={user_id})")
+    
+    if not user_id:
+        logger.error("🔍 ERROR: No user_id in context! This should never happen.")
+        return {
+            "error": "No user context - cannot retrieve profile",
+            "name": None,
+            "allergies": [],
+            "goals": [],
+            "preferences": {},
+            "stats": {"total_messages": 0}
+        }
+    
     # Use sync MongoDB client to avoid async loop conflicts
     if _sync_db is None:
+        logger.warning("🔍 No DB connection - returning empty profile")
         return {
             "error": None,
             "name": None,
@@ -95,8 +119,11 @@ def get_user_profile(user_id: str) -> dict:
         }
 
     try:
+        logger.info(f"🔍 Querying MongoDB for user_id={user_id}")
         user = _sync_db.users.find_one({"user_id": user_id})
+        
         if not user:
+            logger.info(f"🔍 No user found in DB for {user_id} - returning empty profile")
             return {
                 "error": None,
                 "name": None,
@@ -106,28 +133,38 @@ def get_user_profile(user_id: str) -> dict:
                 "stats": {"total_messages": 0}
             }
 
-        return {
+        profile = user.get("profile", {})
+        name = profile.get("name")
+        allergies = proto_to_native(profile.get("allergies", []))
+        
+        logger.info(f"🔍 Found user in DB: name={name}, allergies={allergies}")
+        
+        result = {
             "error": None,
-            "name": user.get("profile", {}).get("name"),
-            "allergies": proto_to_native(user.get("profile", {}).get("allergies", [])),
-            "goals": proto_to_native(user.get("profile", {}).get("goals", [])),
-            "preferences": proto_to_native(user.get("profile", {}).get("preferences", {})),
+            "name": name,
+            "allergies": allergies,
+            "goals": proto_to_native(profile.get("goals", [])),
+            "preferences": proto_to_native(profile.get("preferences", {})),
             "stats": proto_to_native(user.get("stats", {}))
         }
+        
+        logger.info(f"🔍 Returning profile: {result}")
+        return result
     except Exception as e:
-        logger.error(f"Error getting user profile: {e}")
+        logger.error(f"🔍 Error getting user profile: {e}")
         return {"error": str(e)}
 
 
 def update_user_profile(
-    user_id: str,
     name: Optional[str] = None,
     allergies: Optional[List[str]] = None,
     goals: Optional[List[str]] = None,
     fitness_level: Optional[str] = None
 ) -> dict:
     """
-    Update user profile information.
+    Update the CURRENT user's profile information.
+    
+    This automatically updates the profile for whoever is currently chatting.
 
     Call this when user provides:
     - Their name ("მე ვარ გიორგი")
@@ -136,7 +173,6 @@ def update_user_profile(
     - Experience level ("დამწყები ვარ")
 
     Args:
-        user_id: The unique identifier for the user
         name: User's name (optional)
         allergies: List of allergies like ["lactose", "gluten"] (optional)
         goals: List of goals like ["muscle_gain", "weight_loss"] (optional)
@@ -145,6 +181,15 @@ def update_user_profile(
     Returns:
         dict with success status and updated profile
     """
+    # Get user_id from context
+    user_id = _current_user_id.get(None)
+    
+    if not user_id:
+        logger.error("🔍 ERROR: No user_id in context for update_user_profile")
+        return {"success": False, "error": "No user context"}
+    
+    logger.info(f"🔍 update_user_profile CALLED (auto user_id={user_id})")
+    
     # Use sync MongoDB client to avoid async loop conflicts
     if _sync_db is None:
         return {"success": False, "error": "Database not connected"}
