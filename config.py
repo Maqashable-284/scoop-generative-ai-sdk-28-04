@@ -61,7 +61,7 @@ class Settings(BaseModel):
         default_factory=lambda: int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
     )
     max_output_tokens: int = Field(
-        default_factory=lambda: int(os.getenv("MAX_OUTPUT_TOKENS", "4096"))
+        default_factory=lambda: int(os.getenv("MAX_OUTPUT_TOKENS", "8192"))
     )
 
     class Config:
