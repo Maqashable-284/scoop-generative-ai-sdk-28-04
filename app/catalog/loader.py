@@ -177,6 +177,72 @@ class CatalogLoader:
     # Context Formatting
     # -------------------------------------------------------------------------
 
+    def format_catalog_summary(self, products: List[Dict[str, Any]]) -> str:
+        """
+        Generate MINIMAL catalog summary for Gemini context.
+
+        Lean Architecture: Only provide metadata, NOT full product data.
+        Forces Gemini to call search_products() for actual product info.
+
+        Target: ~500-1000 tokens (vs 60k currently)
+        """
+        if not products:
+            return "პროდუქტების კატალოგი ცარიელია."
+
+        # Collect unique values
+        categories = set()
+        brands = set()
+        prices = []
+
+        for p in products:
+            if cat := p.get("category"):
+                categories.add(cat)
+            if brand := p.get("brand"):
+                brands.add(brand)
+            if price := p.get("price"):
+                prices.append(price)
+
+        # Category translations
+        category_names = {
+            "protein": "პროტეინი",
+            "creatine": "კრეატინი",
+            "bcaa": "BCAA/ამინომჟავები",
+            "pre_workout": "პრე-ვორკაუთი",
+            "vitamin": "ვიტამინები",
+            "gainer": "გეინერი",
+            "fat_burner": "ცხიმის მწვავი",
+        }
+
+        cat_list = [f"- {category_names.get(c, c)}" for c in sorted(categories)]
+        brand_list = sorted(brands)[:10]  # Top 10 brands only
+
+        min_price = min(prices) if prices else 0
+        max_price = max(prices) if prices else 0
+
+        summary = f"""# Scoop.ge კატალოგის მიმოხილვა
+
+## კატეგორიები ({len(categories)}):
+{chr(10).join(cat_list)}
+
+## ბრენდები (ტოპ 10):
+{', '.join(brand_list)}
+
+## ფასების დიაპაზონი:
+{min_price:.0f}₾ - {max_price:.0f}₾
+
+## სტატისტიკა:
+- სულ პროდუქტი: {len(products)}
+- მარაგში: {sum(1 for p in products if p.get('in_stock', False))}
+
+---
+
+**CRITICAL INSTRUCTION:**
+ზემოთ მოცემული მხოლოდ კატალოგის ᲛᲘᲛᲝᲮᲘᲚᲕᲐᲐ, არა სრული პროდუქტების ინფორმაცია!
+პროდუქტის რეკომენდაციისთვის, ფასებისთვის, ან დეტალებისთვის **ᲐᲣᲪᲘᲚᲔᲑᲚᲐᲓ** გამოიძახე `search_products()` ფუნქცია!
+არასოდეს არ დაწერო პროდუქტის სახელი, ფასი, ან buylink `search_products()` გამოძახების გარეშე!
+"""
+        return summary
+
     def format_catalog_context(self, products: List[Dict[str, Any]]) -> str:
         """
         Format products as context for Gemini
@@ -231,7 +297,7 @@ class CatalogLoader:
     # Caching
     # -------------------------------------------------------------------------
 
-    async def get_catalog_context(self, force_refresh: bool = False) -> str:
+    async def get_catalog_context(self, force_refresh: bool = False, lean: bool = True) -> str:
         """
         Get catalog context with caching
 
@@ -241,8 +307,12 @@ class CatalogLoader:
         1. Check in-memory cache first
         2. Check if catalog hash changed (products updated)
         3. Refresh if TTL expired or products changed
+
+        Args:
+            force_refresh: Force reload from MongoDB
+            lean: If True, return minimal summary (default). If False, return full catalog.
         """
-        # Check cache
+        # Check cache (only use cache if not changing lean mode)
         if not force_refresh and self._cache and not self._cache.is_expired:
             return self._cache.data
 
@@ -255,8 +325,13 @@ class CatalogLoader:
             logger.info("Catalog changed, refreshing context")
             self._catalog_hash = new_hash
 
-        # Format context
-        context = self.format_catalog_context(products)
+        # Format context - NEW: Use lean summary by default
+        if lean:
+            context = self.format_catalog_summary(products)
+            logger.info(f"Using LEAN catalog summary: ~{len(context)//4} tokens")
+        else:
+            context = self.format_catalog_context(products)
+            logger.info(f"Using FULL catalog context: ~{len(context)//4} tokens")
 
         # Update cache
         self._cache = CacheEntry(

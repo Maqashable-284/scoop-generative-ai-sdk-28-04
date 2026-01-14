@@ -559,9 +559,9 @@ async def lifespan(app: FastAPI):
         cache_ttl_seconds=settings.catalog_cache_ttl_seconds
     )
 
-    # Load catalog context
-    catalog_context = await catalog_loader.get_catalog_context()
-    logger.info(f"Loaded catalog: ~{len(catalog_context)//4} tokens")
+    # Load catalog context - LEAN ARCHITECTURE: Use minimal summary
+    catalog_context = await catalog_loader.get_catalog_context(lean=True)
+    logger.info(f"Loaded lean catalog summary: ~{len(catalog_context)//4} tokens")
 
     # Prepare system instruction with catalog context
     full_system_instruction = SYSTEM_PROMPT + "\n\n" + catalog_context

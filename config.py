@@ -71,9 +71,10 @@ class Settings(BaseModel):
     )
 
     # Week 4: Context Caching Settings
-    # Enables Gemini context caching for ~85% token cost reduction
+    # DISABLED: Lean Architecture uses ~6k tokens, below Google's 32k minimum
+    # Re-enable when catalog grows to 500+ products (~80k tokens)
     enable_context_caching: bool = Field(
-        default_factory=lambda: os.getenv("ENABLE_CONTEXT_CACHING", "true").lower() == "true"
+        default_factory=lambda: os.getenv("ENABLE_CONTEXT_CACHING", "false").lower() == "true"
     )
     # Cache TTL in minutes (1-60, default 60)
     context_cache_ttl_minutes: int = Field(
