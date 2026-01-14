@@ -270,6 +270,7 @@ class ContextCacheManager:
         safety_settings: list = None,
         temperature: float = 0.7,
         max_output_tokens: int = 8192,
+        max_function_calls: int = 30,
     ) -> types.GenerateContentConfig:
         """
         Create a GenerateContentConfig that uses cached content.
@@ -279,9 +280,14 @@ class ContextCacheManager:
 
         When cache is invalid, falls back to non-cached config
         with full system instruction.
+
+        Args:
+            max_function_calls: Maximum remote calls for automatic function calling.
+                               Default SDK limit is 10, increased to 30 for Gemini 3.
         """
         if self.is_cache_valid:
             # Cached mode: system instruction is in the cache
+            # FIX: Add automatic_function_calling with increased limit
             return types.GenerateContentConfig(
                 tools=tools,
                 safety_settings=safety_settings,
@@ -289,6 +295,9 @@ class ContextCacheManager:
                 top_p=0.95,
                 top_k=40,
                 max_output_tokens=max_output_tokens,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    maximum_remote_calls=max_function_calls
+                ),
                 # Note: system_instruction NOT included - it's cached
             )
         else:
@@ -297,6 +306,7 @@ class ContextCacheManager:
             if self._catalog_context:
                 full_instruction += "\n\n" + self._catalog_context
 
+            # FIX: Add automatic_function_calling with increased limit
             return types.GenerateContentConfig(
                 system_instruction=full_instruction,
                 tools=tools,
@@ -305,6 +315,9 @@ class ContextCacheManager:
                 top_p=0.95,
                 top_k=40,
                 max_output_tokens=max_output_tokens,
+                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                    maximum_remote_calls=max_function_calls
+                ),
             )
 
     async def get_cache_info(self) -> Dict[str, Any]:

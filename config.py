@@ -29,7 +29,7 @@ class Settings(BaseModel):
     # Question #5: Rate Limits for Gemini 2.5 Flash:
     # - Free tier: 15 RPM, 1M TPM, 1500 RPD
     # - Paid tier: 2000 RPM, 4M TPM (standard), scales with billing
-    model_name: str = "gemini-3-flash-preview"
+    model_name: str = "gemini-3-flash-preview"  # FINAL - არ ვცვლი მეტჯერ!
 
     # Session & Memory
     # Question #1: Memory Persistence - Session TTL
@@ -62,6 +62,12 @@ class Settings(BaseModel):
     )
     max_output_tokens: int = Field(
         default_factory=lambda: int(os.getenv("MAX_OUTPUT_TOKENS", "8192"))
+    )
+    # FIX: Maximum function calls for automatic function calling
+    # Default SDK limit is 10, which is too low for Gemini 3 Flash Preview
+    # Increase to 30 to allow complete product search workflows
+    max_function_calls: int = Field(
+        default_factory=lambda: int(os.getenv("MAX_FUNCTION_CALLS", "30"))
     )
 
     # Week 4: Context Caching Settings

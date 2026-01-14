@@ -371,6 +371,8 @@ class SessionManager:
                 logger.info(f"🚀 Using cached context: {cached_content_name}")
 
                 # Config without system_instruction (it's in the cache)
+                # FIX: Add automatic_function_calling with increased limit (default is 10)
+                # Gemini 3 Flash Preview makes multiple function calls rapidly and exhausts the limit
                 chat_config = GenerateContentConfig(
                     tools=self.tools,
                     safety_settings=self.safety_settings if settings.enable_safety_settings else None,
@@ -378,6 +380,9 @@ class SessionManager:
                     top_p=0.95,
                     top_k=40,
                     max_output_tokens=settings.max_output_tokens,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        maximum_remote_calls=settings.max_function_calls
+                    ),
                 )
 
                 # Create chat with cached content
@@ -392,6 +397,8 @@ class SessionManager:
                     self.cache_manager.record_cache_miss()
                     logger.warning("⚠️ Context cache unavailable, using full system instruction")
 
+                # FIX: Add automatic_function_calling with increased limit (default is 10)
+                # Gemini 3 Flash Preview makes multiple function calls rapidly and exhausts the limit
                 chat_config = GenerateContentConfig(
                     system_instruction=self.system_instruction,
                     tools=self.tools,
@@ -400,6 +407,9 @@ class SessionManager:
                     top_p=0.95,
                     top_k=40,
                     max_output_tokens=settings.max_output_tokens,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        maximum_remote_calls=settings.max_function_calls
+                    ),
                 )
 
                 # Create async chat session (new SDK)
@@ -801,13 +811,22 @@ def parse_quick_replies(text: str) -> tuple[str, list]:
 
 def clean_leaked_function_calls(text: str) -> str:
     """
-    Remove any leaked function call XML/code from Gemini response.
-    
-    Gemini sometimes outputs function calls as text instead of using
-    the proper function calling API. This cleans up those artifacts.
+    Remove leaked function call XML/code from response text.
+    Gemini sometimes outputs function calls as text instead of proper API calls.
     """
-    # Remove <execute_function.../> tags
+    # Safety check - if text is None, return empty string
+    if text is None:
+        return ""
+    
+    # Remove <execute_function> tags
     text = re.sub(r'<execute_function[^>]*/?>', '', text, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Remove </execute_function> tags
+    text = re.sub(r'</execute_function>', '', text, flags=re.IGNORECASE)
+    
+    # Remove any partial function call syntax
+    text = re.sub(r'<\?xml[^>]*>', '', text)
+    text = re.sub(r'<function_calls>.*?</function_calls>', '', text, flags=re.DOTALL)
     
     # Remove print(...) statements that look like function calls
     text = re.sub(r'print\([^)]+\)', '', text)
