@@ -841,6 +841,119 @@ def clean_leaked_function_calls(text: str) -> str:
 
 
 # =============================================================================
+# TIP TAG INJECTION (Gemini 3 Flash Preview Fix)
+# =============================================================================
+
+def generate_contextual_tip(text: str) -> str:
+    """
+    Generate contextual tip based on response content.
+
+    Gemini 3 Flash Preview doesn't reliably generate [TIP] tags despite
+    system prompt instructions. This function generates appropriate tips
+    based on response content keywords.
+
+    Args:
+        text: The response text to analyze
+
+    Returns:
+        Contextual tip string (1-2 sentences in Georgian)
+    """
+    text_lower = text.lower()
+
+    # Product-specific tips mapped to keywords
+    contextual_tips = {
+        # Protein-related
+        'პროტეინ': 'პროტეინი მიიღეთ ვარჯიშის შემდეგ 30 წუთში მაქსიმალური ეფექტისთვის.',
+        'whey': 'whey პროტეინი საუკეთესოდ აღიწოვს ვარჯიშის შემდეგ.',
+        'isolate': 'isolate უფრო სწრაფად აღიწოვს და შეიცავს ნაკლებ ლაქტოზას.',
+
+        # Creatine-related
+        'კრეატინ': 'კრეატინი ყოველდღიურად მიიღეთ 3-5 გრამი, ვარჯიშის დღეებშიც და დასვენების დღეებშიც.',
+        'creatine': 'კრეატინის loading ფაზა არ არის სავალდებულო, შეგიძლიათ დაიწყოთ 3-5g/დღე.',
+
+        # Pre-workout
+        'პრე-ვორკ': 'პრე-ვორკაუთი ვარჯიშამდე 20-30 წუთით ადრე მიიღეთ.',
+        'pre-work': 'თავიდან აარიდეთ პრე-ვორკაუთი საღამოს, რათა ძილი არ დაირღვეს.',
+
+        # BCAA
+        'bcaa': 'BCAA ეფექტურია ცარიელ კუჭზე ვარჯიშის დროს.',
+        'ამინომჟავ': 'ამინომჟავები საუკეთესოდ მუშაობს ვარჯიშის დროს და შემდეგ.',
+
+        # Gainer
+        'გეინერ': 'გეინერი მიიღეთ ვარჯიშის შემდეგ და საჭიროების მიხედვით კვებებს შორის.',
+        'gainer': 'გეინერი 2-3 დოზად დაყავით დღეში კუჭის დისკომფორტის თავიდან ასაცილებლად.',
+
+        # Vitamins
+        'ვიტამინ': 'ვიტამინები უმჯობესია საკვებთან ერთად მიიღოთ შეწოვის გასაუმჯობესებლად.',
+        'vitamin': 'მულტივიტამინები დილით საკვებთან ერთად მიიღეთ.',
+
+        # Fat burners / Weight
+        'fat burn': 'fat burner-ების ეფექტურობისთვის აუცილებელია კალორიული დეფიციტი.',
+        'წონის კლება': 'წონის კლებისთვის მთავარია კალორიული დეფიციტი - დანამატები დამხმარე საშუალებაა.',
+        'წონა': 'წონის ცვლილებისთვის მთავარია კალორიების ბალანსი - დანამატები დამხმარე საშუალებაა.',
+        'მასა': 'კუნთოვანი მასის მოსაპოვებლად საჭიროა კალორიული სუფიციტი და საკმარისი პროტეინი.',
+        'კუნთ': 'კუნთის ზრდისთვის საჭიროა რეგულარული ვარჯიში, საკმარისი პროტეინი და დასვენება.',
+
+        # Hydration
+        'წყალი': 'დღეში მინიმუმ 2-3 ლიტრი წყალი მიიღეთ, განსაკუთრებით კრეატინის მიღებისას.',
+    }
+
+    # Find matching tip based on keywords
+    for keyword, tip in contextual_tips.items():
+        if keyword in text_lower:
+            logger.info(f"💡 Generated contextual tip for keyword: '{keyword}'")
+            return tip
+
+    # Default fallback tip
+    logger.info("💡 Using default generic tip (no keyword match)")
+    return 'რეკომენდაციებთან დაკავშირებით კითხვების შემთხვევაში მოგვწერეთ support@scoop.ge'
+
+
+def ensure_tip_tag(response_text: str) -> str:
+    """
+    Ensure response has [TIP] tag. If missing, inject contextual tip.
+
+    This is a safety net for Gemini 3 Flash Preview which doesn't reliably
+    generate [TIP] tags despite explicit system prompt instructions.
+    The frontend (parseProducts.ts) expects [TIP]...[/TIP] tags to render
+    the yellow "პრაქტიკული რჩევა" box.
+
+    Args:
+        response_text: The model's response text
+
+    Returns:
+        Response text with guaranteed [TIP] tag
+    """
+    # Safety check
+    if not response_text:
+        return response_text
+
+    # Check if TIP tag already exists
+    if '[TIP]' in response_text and '[/TIP]' in response_text:
+        logger.info("✅ [TIP] tag already present in response")
+        return response_text
+
+    logger.warning("⚠️ [TIP] tag missing from Gemini response - injecting contextual tip")
+
+    # Generate contextual tip based on response content
+    tip = generate_contextual_tip(response_text)
+
+    # Determine injection point
+    # CRITICAL: Inject BEFORE [QUICK_REPLIES] if it exists
+    if '[QUICK_REPLIES]' in response_text:
+        # Split at QUICK_REPLIES and insert TIP before it
+        parts = response_text.split('[QUICK_REPLIES]', 1)
+        injected = f"{parts[0].rstrip()}\n\n[TIP]\n{tip}\n[/TIP]\n\n[QUICK_REPLIES]{parts[1]}"
+        logger.info(f"💉 Injected TIP before [QUICK_REPLIES]: {tip[:60]}...")
+    else:
+        # Append TIP at the very end
+        injected = f"{response_text.rstrip()}\n\n[TIP]\n{tip}\n[/TIP]"
+        logger.info(f"💉 Appended TIP at end: {tip[:60]}...")
+
+    return injected
+
+
+# =============================================================================
 # ENDPOINTS
 # =============================================================================
 
@@ -992,6 +1105,11 @@ async def chat(request: Request, chat_request: ChatRequest):
                 success=False,
                 error="empty_response"
             )
+
+        # CRITICAL FIX: Ensure [TIP] tag is present (inject if missing)
+        # Gemini 3 Flash Preview doesn't reliably generate [TIP] tags
+        # This must be called BEFORE parse_quick_replies() so TIP is in the text
+        response_text = ensure_tip_tag(response_text)
 
         # Parse quick replies
         clean_text, quick_replies = parse_quick_replies(response_text)
