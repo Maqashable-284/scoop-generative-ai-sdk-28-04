@@ -841,6 +841,337 @@ def clean_leaked_function_calls(text: str) -> str:
 
 
 # =============================================================================
+# PRODUCT FORMAT INJECTION (Gemini 3 Flash Preview Fix)
+# =============================================================================
+
+def extract_search_products_results(response) -> list:
+    """
+    Extract products from search_products AFC results.
+
+    With automatic function calling, the SDK handles function execution internally.
+    We can access the history to find function call/response pairs.
+
+    Returns list of product dicts with keys:
+    - name, brand, price, servings, pricePerServing, description, buyLink
+    """
+    products = []
+
+    try:
+        # Access the chat history to find function responses
+        # The response object has candidates with content parts
+        for candidate in response.candidates:
+            for part in candidate.content.parts:
+                # Check for function response in part
+                if hasattr(part, 'function_response') and part.function_response:
+                    func_resp = part.function_response
+                    if func_resp.name == 'search_products':
+                        # Extract products from response
+                        response_data = func_resp.response
+                        if isinstance(response_data, dict) and 'products' in response_data:
+                            products.extend(response_data['products'])
+                        elif hasattr(response_data, 'get'):
+                            prods = response_data.get('products', [])
+                            if prods:
+                                products.extend(prods)
+    except Exception as e:
+        logger.warning(f"Failed to extract search_products results from response: {e}")
+
+    # Also try to get from chat history if available
+    # This catches products from earlier in the conversation
+
+    return products
+
+
+def has_valid_product_markdown(text: str) -> bool:
+    """
+    Check if response already has properly formatted products.
+
+    Looks for pattern:
+    **Product Name**
+    *Brand*
+    **Price ₾** · Servings · Price/Serving
+
+    Returns True if the format is already correct.
+    """
+    if not text:
+        return False
+
+    # Regex patterns from parseProducts.ts
+    # Product name: **bold** text on its own line
+    product_name_pattern = r'^\*\*[^*]+\*\*\s*$'
+    # Brand: *italic* text on its own line
+    brand_pattern = r'^\*[^*]+\*\s*$'
+    # Price metadata: **XXX ₾** · XX პორცია · X.XX ₾/პორცია
+    price_metadata_pattern = r'\*?\*?\d+(?:\.\d+)?\s*₾\*?\*?\s*·\s*\d+\s*პორცია'
+
+    has_names = bool(re.search(product_name_pattern, text, re.MULTILINE))
+    has_brands = bool(re.search(brand_pattern, text, re.MULTILINE))
+    has_prices = bool(re.search(price_metadata_pattern, text))
+
+    # Need at least name AND price to consider valid
+    # Brand is optional but preferred
+    is_valid = has_names and has_prices
+
+    if is_valid:
+        logger.info("✅ Response has valid product markdown format")
+
+    return is_valid
+
+
+def format_products_markdown(products: list, intro_text: str = "") -> str:
+    """
+    Generate properly formatted markdown for products.
+
+    Format:
+    **რეკომენდებული**
+    **Product Name (Size)**
+    *Brand*
+    **Price ₾** · Servings პორცია · PricePerServing ₾/პორცია
+    Description
+    [ყიდვა →](buyLink)
+
+    ---
+    """
+    if not products:
+        return ""
+
+    formatted = []
+    ranks = ['რეკომენდებული', 'ალტერნატივა', 'ბიუჯეტური']
+
+    for idx, product in enumerate(products[:3]):  # Max 3 products
+        rank = ranks[min(idx, len(ranks)-1)]
+
+        # Extract fields with fallbacks
+        name = product.get('name') or product.get('name_ka') or 'უცნობი პროდუქტი'
+        brand = product.get('brand') or ''
+        price = product.get('price') or 0
+        servings = product.get('servings') or 0
+
+        # Calculate price per serving if not provided
+        price_per_serving = 0
+        if servings and price:
+            price_per_serving = price / servings
+
+        # Get URL - try different field names
+        buy_link = (
+            product.get('url') or
+            product.get('product_url') or
+            product.get('buyLink') or
+            f"https://scoop.ge/search?q={name.replace(' ', '+')}"
+        )
+
+        # Generate description based on category if not provided
+        description = product.get('description') or ''
+        if not description:
+            # Generate contextual description based on product name
+            name_lower = name.lower()
+            if 'whey' in name_lower or 'პროტეინ' in name_lower:
+                description = 'მაღალი ხარისხის პროტეინი კუნთის ზრდისა და აღდგენისთვის.'
+            elif 'creatine' in name_lower or 'კრეატინ' in name_lower:
+                description = 'კრეატინი ძალისა და გამძლეობის გასაზრდელად.'
+            elif 'bcaa' in name_lower or 'ამინო' in name_lower:
+                description = 'ამინომჟავები კუნთის აღდგენისა და პროტეინის სინთეზისთვის.'
+            elif 'pre' in name_lower or 'ენერგ' in name_lower:
+                description = 'პრე-ვორკაუთი ენერგიისა და ფოკუსისთვის ვარჯიშის დროს.'
+            elif 'gainer' in name_lower or 'მასა' in name_lower:
+                description = 'გეინერი კალორიების და კუნთის მასის მოსაპოვებლად.'
+            else:
+                description = 'ხარისხიანი სპორტული დანამატი scoop.ge-დან.'
+
+        # Format product markdown
+        product_md = f"""**{rank}**
+**{name}**
+*{brand}*
+**{price:.0f} ₾** · {servings} პორცია · {price_per_serving:.2f} ₾/პორცია
+{description}
+[ყიდვა →]({buy_link})
+
+---"""
+
+        formatted.append(product_md)
+
+    return "\n\n".join(formatted)
+
+
+def extract_products_from_text(text: str) -> list:
+    """
+    Fallback: Extract product info from unformatted text when Gemini
+    doesn't call search_products but includes product info in response.
+
+    Looks for patterns like:
+    - "1. **Product Name** (XXX ლარი)"
+    - "1. **Product Name** - XXX ლარი"
+    - "1. **Product Name (Brand)** - XXX-YYY ლარი (ZZ პორცია)"
+
+    Returns list of product dicts with extracted info.
+    """
+    products = []
+
+    # Pattern: Numbered list with bold name, price can be in parens or after dash
+    # Captures: 1=name, 2=price (first number found after name)
+    # e.g., "1. **Critical Whey (Applied Nutrition)** - 253-260 ლარი (66 პორცია)"
+    # e.g., "1. **Nitro Tech (Muscletech)** - 299 ლარი (60 პორცია)"
+    # e.g., "3. **Mutant Whey** - 253 ლარი"
+    patterns = [
+        # === Numbered list patterns ===
+        # Pattern: "1. **Name** (size) - **253 ლარი**" (price in bold after dash)
+        r'\d+\.\s*\*\*([^*]+)\*\*[^*]*-\s*\*\*(\d+)(?:-\d+)?\s*(?:ლარი|₾)\*\*',
+        # Pattern: "1. **Name** - ... ფასი: **253 ლარი**"
+        r'\d+\.\s*\*\*([^*]+)\*\*[^*]*ფასი:\s*\*\*(\d+)(?:-\d+)?\s*(?:ლარი|₾)\*\*',
+        # Pattern: price in bold anywhere after name on same entry
+        r'\d+\.\s*\*\*([^*]+)\*\*.*?\*\*(\d+)(?:-\d+)?\s*(?:ლარი|₾)\*\*',
+        # Pattern: non-bold price directly after dash
+        r'\d+\.\s*\*\*([^*]+)\*\*\s*[-–—]\s*(\d+)(?:-\d+)?\s*(?:ლარი|₾)',
+        # Pattern: non-bold price in parentheses
+        r'\d+\.\s*\*\*([^*]+)\*\*\s*\((\d+(?:\.\d+)?)\s*(?:ლარი|₾)\)',
+
+        # === Bullet point patterns (*, -, •) ===
+        # Pattern: "* **Name** - XXX ლარი"
+        r'[\*\-•]\s*\*\*([^*]+)\*\*\s*[-–—]\s*(\d+)(?:-\d+)?\s*(?:ლარი|₾)',
+        # Pattern: "* **Name** (XXX ლარი)"
+        r'[\*\-•]\s*\*\*([^*]+)\*\*\s*\((\d+(?:\.\d+)?)\s*(?:ლარი|₾)\)',
+        # Pattern: "* **Name** - price in text" (looser match)
+        r'[\*\-•]\s*\*\*([^*]+)\*\*[^0-9\n]*?(\d{2,3})(?:-\d+)?\s*(?:ლარი|₾)',
+    ]
+
+    seen_names = set()
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            name = match.group(1).strip()
+            price = float(match.group(2))
+
+            # Skip if we've already seen this product
+            name_lower = name.lower()
+            if name_lower in seen_names:
+                continue
+            seen_names.add(name_lower)
+
+            # Try to find servings info nearby
+            servings = 0
+            # Look for "XX პორცია" near the product name
+            serving_pattern = rf'{re.escape(name)}[^0-9]*\((\d+)\s*პორცია\)'
+            serving_match = re.search(serving_pattern, text, re.IGNORECASE)
+            if serving_match:
+                servings = int(serving_match.group(1))
+            else:
+                # Try simpler pattern
+                simple_serving = re.search(rf'{re.escape(name[:20])}.*?(\d+)\s*პორცია', text)
+                if simple_serving:
+                    servings = int(simple_serving.group(1))
+
+            # Extract brand - check for known brands in name
+            brand = ""
+            brands = ['Mutant', 'Applied Nutrition', 'Applied', 'Optimum', 'Muscletech',
+                     'BioTech', 'Dymatize', 'MyProtein', 'BSN', 'Critical', 'Nitro']
+            for b in brands:
+                if b.lower() in name.lower():
+                    brand = b
+                    break
+
+            # Clean up product name - remove brand in parentheses
+            clean_name = re.sub(r'\s*\([^)]+\)\s*$', '', name).strip()
+
+            products.append({
+                'name': clean_name,
+                'brand': brand,
+                'price': price,
+                'servings': servings,
+                'url': f'https://scoop.ge/search?q={clean_name.replace(" ", "+")}'
+            })
+
+    if products:
+        logger.info(f"📝 Extracted {len(products)} products from text: {[p['name'] for p in products[:3]]}")
+
+    return products[:3]  # Max 3 products
+
+
+def ensure_product_format(response_text: str, products_data: list) -> str:
+    """
+    Inject properly formatted products if Gemini didn't use markdown format.
+    Similar to ensure_tip_tag().
+
+    This function:
+    1. Checks if response already has proper product markdown
+    2. If not, tries to extract products from text or uses products_data
+    3. Injects formatted markdown, preserving intro text
+    """
+    # Check if already formatted correctly
+    if has_valid_product_markdown(response_text):
+        logger.info("✅ Products already in correct markdown format")
+        return response_text
+
+    # Try to get products from function call results first
+    final_products = products_data if products_data else []
+
+    # If no products from function calls, try to extract from text
+    if not final_products:
+        final_products = extract_products_from_text(response_text)
+
+    if not final_products:
+        logger.info("📦 No products to format")
+        return response_text
+
+    # Generate formatted markdown
+    formatted_products = format_products_markdown(final_products)
+
+    if not formatted_products:
+        return response_text
+
+    logger.warning(f"⚠️ Product markdown format missing - injecting {len(final_products)} formatted products")
+
+    # Strategy: Find intro text and insert products after it
+    # Look for first paragraph/sentence before any list or numbered content
+
+    # Split at first double newline or numbered list
+    intro_patterns = [
+        r'^(.+?)(?=\n\n|\n\d+\.|\n-\s)',  # Text before double newline or list
+        r'^(.+?\.)(?=\s)',  # First sentence
+    ]
+
+    intro = ""
+    rest = response_text
+
+    for pattern in intro_patterns:
+        match = re.match(pattern, response_text, re.DOTALL)
+        if match:
+            intro = match.group(1).strip()
+            rest = response_text[len(match.group(0)):].strip()
+            break
+
+    # If we couldn't find a good split point, use first 200 chars as intro
+    if not intro and len(response_text) > 200:
+        # Find a sentence break
+        period_pos = response_text.find('.', 50)
+        if period_pos > 0 and period_pos < 300:
+            intro = response_text[:period_pos + 1].strip()
+            rest = response_text[period_pos + 1:].strip()
+        else:
+            intro = ""
+            rest = response_text
+
+    # Build final response
+    if intro:
+        injected = f"{intro}\n\n{formatted_products}"
+    else:
+        injected = formatted_products
+
+    # Add any remaining content if it looks like a conclusion (not just more product text)
+    # Skip content that looks like plain product descriptions
+    if rest:
+        # Check if 'rest' is just more unformatted product text
+        has_product_indicators = any(x in rest.lower() for x in ['პროტეინ', 'კრეატინ', 'გეინერ', 'whey', 'bcaa'])
+        has_list_format = rest.strip().startswith(('1.', '2.', '-', '•'))
+
+        if not has_list_format and not (has_product_indicators and len(rest) > 100):
+            injected = f"{injected}\n\n{rest}"
+
+    logger.info(f"💉 Injected formatted products into response")
+
+    return injected
+
+
+# =============================================================================
 # TIP TAG INJECTION (Gemini 3 Flash Preview Fix)
 # =============================================================================
 
@@ -1105,6 +1436,15 @@ async def chat(request: Request, chat_request: ChatRequest):
                 success=False,
                 error="empty_response"
             )
+
+        # CRITICAL FIX: Extract products from function calls and ensure format
+        # Gemini 3 Flash Preview doesn't reliably format products as markdown
+        # This must be called BEFORE ensure_tip_tag() to inject products first
+        search_products_results = extract_search_products_results(response)
+        if search_products_results:
+            logger.info(f"📦 Extracted {len(search_products_results)} products from search_products calls")
+        # Always try to ensure product format (fallback extracts from text)
+        response_text = ensure_product_format(response_text, search_products_results)
 
         # CRITICAL FIX: Ensure [TIP] tag is present (inject if missing)
         # Gemini 3 Flash Preview doesn't reliably generate [TIP] tags
