@@ -575,6 +575,14 @@ async def lifespan(app: FastAPI):
         sync_db = sync_client[settings.mongodb_database]
         logger.info("Initialized sync MongoDB client for tool functions")
 
+        # WARM-UP: Execute a simple query to establish connection pool
+        # This prevents "cold start" issues where first queries return 0 results
+        try:
+            warmup_count = sync_db.products.count_documents({"in_stock": True})
+            logger.info(f"🔥 MongoDB warm-up complete: {warmup_count} in-stock products")
+        except Exception as warmup_err:
+            logger.warning(f"⚠️ MongoDB warm-up failed: {warmup_err}")
+
     set_stores(
         user_store=user_store,
         db=db_manager.db if settings.mongodb_uri else None,
@@ -1509,54 +1517,282 @@ async def chat(request: Request, chat_request: ChatRequest):
 @limiter.limit(f"{settings.rate_limit_per_minute}/minute")
 async def chat_stream(request: Request, stream_request: ChatRequest):
     """
-    SSE Streaming endpoint (New SDK)
+    SSE Streaming endpoint with Manual Function Calling.
 
-    ANSWER TO QUESTION #4: Streaming with New Gemini SDK
+    CRITICAL: google-genai SDK streaming is INCOMPATIBLE with automatic function calling.
+    This endpoint creates a NEW chat session WITHOUT AFC to enable manual function handling.
 
-    New SDK streaming:
-        response = await chat.send_message_stream(msg)
-        async for chunk in response:
-            yield chunk.text
+    Flow:
+    1. Create chat session without AFC (automatic_function_calling disabled)
+    2. Send user message, check for function_call in response
+    3. If function_call found, execute locally and send result back
+    4. Repeat until we get final text response
+    5. Stream text chunks to frontend progressively
     """
+    import json
+
     async def generate():
         try:
-            session = await session_manager.get_or_create_session(stream_request.user_id)
+            import time
+            stream_start = time.time()
+            logger.info(f"🚀 Stream: user={stream_request.user_id}, session={stream_request.session_id}")
+
+            # CRITICAL: Create a NEW chat session WITHOUT AFC for streaming
+            # The regular session_manager creates sessions WITH AFC which conflicts with manual handling
+
+            # Load existing history for context continuity
+            logger.info(f"📚 Stream: Loading history...")
+            history, loaded_session_id, summary = await conversation_store.load_history(
+                stream_request.user_id,
+                session_id=stream_request.session_id
+            )
+            logger.info(f"📚 Stream: Loaded {len(history)} history entries")
+
+            # Convert BSON history to SDK format
+            sdk_history = []
+            for entry in history:
+                role = entry.get("role", "user")
+                parts = []
+                for part in entry.get("parts", []):
+                    if "text" in part:
+                        parts.append(Part.from_text(text=part["text"]))
+                if parts:
+                    if role == "user":
+                        sdk_history.append(UserContent(parts=parts))
+                    else:
+                        sdk_history.append(ModelContent(parts=parts))
+
+            # Inject summary if exists
+            if summary:
+                summary_content = UserContent(
+                    parts=[Part.from_text(text=f"[წინა საუბრის კონტექსტი: {summary}]")]
+                )
+                sdk_history = [summary_content] + sdk_history
+
+            logger.info(f"📚 Stream: Converted {len(sdk_history)} SDK history entries")
+
+            # Create chat config WITHOUT automatic_function_calling
+            # This allows us to handle function calls manually
+            stream_chat_config = GenerateContentConfig(
+                system_instruction=session_manager.system_instruction,
+                tools=GEMINI_TOOLS,
+                safety_settings=SAFETY_SETTINGS if settings.enable_safety_settings else None,
+                temperature=0.7,
+                top_p=0.95,
+                top_k=40,
+                max_output_tokens=settings.max_output_tokens,
+                # NO automatic_function_calling - this is the key difference!
+            )
+
+            # Create new chat session for streaming (without AFC)
+            # NOTE: gemini_client.aio.chats.create() is SYNC - it returns AsyncChat directly
+            logger.info(f"🔧 Stream: Creating chat session with model={settings.model_name}")
+            stream_chat = gemini_client.aio.chats.create(
+                model=settings.model_name,
+                history=sdk_history if sdk_history else None,
+                config=stream_chat_config,
+            )
+            setup_time = time.time() - stream_start
+            logger.info(f"✅ Stream: Chat session created (setup: {setup_time:.2f}s)")
 
             # Set user context for tool functions
             _current_user_id.set(stream_request.user_id)
 
-            # Stream response (New SDK uses send_message_stream)
-            response = await session.chat.send_message_stream(
-                stream_request.message
-            )
+            accumulated_text = ""
+            search_products_results = []
+            max_function_rounds = 3  # Reduced from 5 - 3 rounds is enough for most queries
+            search_products_calls = 0  # Limit search_products to 1 call per request
+            gemini_start = time.time()
 
-            full_text = ""
+            # Initial message
+            current_message = stream_request.message
 
-            # ANSWER TO QUESTION #4: Streaming iteration (New SDK)
-            async for chunk in response:
-                if chunk.text:
-                    full_text += chunk.text
-                    # SSE format
-                    yield f"data: {chunk.text}\n\n"
+            for round_num in range(max_function_rounds):
+                round_start = time.time()
+                logger.info(f"🔄 Stream round {round_num + 1}")
 
-            # Parse quick replies from full response
-            clean_text, quick_replies = parse_quick_replies(full_text)
+                try:
+                    response = await asyncio.wait_for(
+                        stream_chat.send_message(current_message),
+                        timeout=settings.gemini_timeout_seconds
+                    )
+                    round_time = time.time() - round_start
+                    logger.info(f"⏱️ Round {round_num + 1} Gemini response: {round_time:.2f}s")
+                except asyncio.TimeoutError:
+                    logger.error(f"⏰ Stream: Timeout after {settings.gemini_timeout_seconds}s")
+                    yield f"data: {json.dumps({'type': 'error', 'content': 'Timeout - გთხოვთ სცადოთ უფრო მარტივი კითხვა'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
+                except Exception as send_err:
+                    logger.error(f"❌ Stream: send_message error: {send_err}", exc_info=True)
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'API error: {str(send_err)[:100]}'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    return
 
-            # Send quick replies as final event
+                # Check response for function calls or text
+                if not hasattr(response, 'candidates') or not response.candidates:
+                    logger.warning(f"⚠️ Stream: Empty response")
+                    break
+
+                candidate = response.candidates[0]
+                if not hasattr(candidate, 'content') or not candidate.content.parts:
+                    break
+
+                # Process all parts
+                function_calls_to_execute = []
+                text_parts = []
+
+                for part in candidate.content.parts:
+                    if hasattr(part, 'function_call') and part.function_call:
+                        function_calls_to_execute.append(part.function_call)
+                    elif hasattr(part, 'text') and part.text:
+                        text_parts.append(part.text)
+
+                # Stream any text immediately
+                for text_chunk in text_parts:
+                    accumulated_text += text_chunk
+                    yield f"data: {json.dumps({'type': 'text', 'content': text_chunk})}\n\n"
+
+                # If no function calls, we're done
+                if not function_calls_to_execute:
+                    break
+
+                # Execute function calls and prepare responses
+                function_responses = []
+                # OPTIMIZATION: Only process FIRST search_products call per batch
+                # Gemini sometimes sends multiple search_products in one response
+                search_calls_in_batch = [fc for fc in function_calls_to_execute if fc.name == "search_products"]
+                if len(search_calls_in_batch) > 1:
+                    logger.warning(f"⚠️ Stream: Gemini sent {len(search_calls_in_batch)} search_products calls - using only first")
+                    # Keep only first search_products, remove others
+                    first_search_found = False
+                    filtered_calls = []
+                    for fc in function_calls_to_execute:
+                        if fc.name == "search_products":
+                            if not first_search_found:
+                                filtered_calls.append(fc)
+                                first_search_found = True
+                            # Skip subsequent search_products
+                        else:
+                            filtered_calls.append(fc)
+                    function_calls_to_execute = filtered_calls
+
+                logger.info(f"🔧 Stream: Processing {len(function_calls_to_execute)} function calls, search_products_calls={search_products_calls}")
+                for fc in function_calls_to_execute:
+                    func_name = fc.name
+                    func_args = dict(fc.args) if fc.args else {}
+                    logger.info(f"🔧 Stream: {func_name}({func_args})")
+
+                    # Execute the function
+                    if func_name == "search_products":
+                        # LIMIT: Only execute search_products once per request
+                        # Increment counter BEFORE execution to block ALL subsequent calls
+                        search_products_calls += 1
+                        if search_products_calls > 1:
+                            logger.warning(f"⚠️ Stream: SKIPPING search_products (call #{search_products_calls}) - returning {len(search_products_results)} cached products")
+                            result = {"products": search_products_results, "count": len(search_products_results), "note": "Already searched - using cached results"}
+                        else:
+                            logger.info(f"✅ Stream: EXECUTING search_products (call #{search_products_calls})")
+                            result = search_products(**func_args)
+                            # Track for product formatting (even if 0 results)
+                            if result.get("products"):
+                                search_products_results.extend(result["products"])
+                            logger.info(f"✅ Stream: Got {len(result.get('products', []))} products")
+                    elif func_name == "get_user_profile":
+                        result = get_user_profile()
+                    elif func_name == "update_user_profile":
+                        result = update_user_profile(**func_args)
+                    elif func_name == "get_product_details":
+                        result = get_product_details(**func_args)
+                    else:
+                        result = {"error": f"Unknown function: {func_name}"}
+
+                    # Build function response part
+                    function_responses.append(
+                        Part.from_function_response(
+                            name=func_name,
+                            response=result
+                        )
+                    )
+
+                # Send all function responses back as next message
+                current_message = function_responses
+
+            # Post-processing: Ensure product format
+            if search_products_results and not has_valid_product_markdown(accumulated_text):
+                formatted_products = format_products_markdown(search_products_results)
+                if formatted_products:
+                    yield f"data: {json.dumps({'type': 'products', 'content': formatted_products})}\n\n"
+                    accumulated_text += "\n\n" + formatted_products
+
+            # Post-processing: Ensure TIP tag
+            if "[TIP]" not in accumulated_text and "[/TIP]" not in accumulated_text:
+                tip = generate_contextual_tip(accumulated_text)
+                if tip:
+                    tip_block = f"\n\n[TIP]\n{tip}\n[/TIP]"
+                    yield f"data: {json.dumps({'type': 'tip', 'content': tip_block})}\n\n"
+                    accumulated_text += tip_block
+
+            # Parse and send quick replies
+            clean_text, quick_replies = parse_quick_replies(accumulated_text)
             if quick_replies:
-                import json
-                yield f"event: quick_replies\ndata: {json.dumps(quick_replies)}\n\n"
+                yield f"data: {json.dumps({'type': 'quick_replies', 'content': quick_replies})}\n\n"
 
-            # Save session
-            await session_manager.save_session(session)
+            # Save conversation history from stream_chat
+            try:
+                stream_history = stream_chat.get_history()
+                # Convert SDK history to BSON for MongoDB storage
+                bson_history = []
+                for content in stream_history:
+                    role = "model" if isinstance(content, ModelContent) else "user"
+                    if hasattr(content, 'role'):
+                        role = content.role
+                    entry = {"role": role, "parts": []}
+                    for part in content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            entry["parts"].append({"text": part.text})
+                        elif hasattr(part, 'function_call') and part.function_call:
+                            entry["parts"].append({
+                                "function_call": {
+                                    "name": part.function_call.name,
+                                    "args": dict(part.function_call.args) if part.function_call.args else {}
+                                }
+                            })
+                        elif hasattr(part, 'function_response') and part.function_response:
+                            entry["parts"].append({
+                                "function_response": {
+                                    "name": part.function_response.name,
+                                    "response": part.function_response.response
+                                }
+                            })
+                    if entry["parts"]:
+                        bson_history.append(entry)
 
-            # Done
-            yield "event: done\ndata: {}\n\n"
+                # Save to MongoDB
+                final_session_id = stream_request.session_id if stream_request.session_id else loaded_session_id
+                await conversation_store.save_history(
+                    user_id=stream_request.user_id,
+                    session_id=final_session_id,
+                    history=bson_history,
+                    metadata={"language": "ka"}
+                )
+            except Exception as save_err:
+                logger.warning(f"⚠️ Stream: History save failed: {save_err}")
+
+            # Update user stats
+            await user_store.increment_stats(stream_request.user_id)
+
+            total_time = time.time() - stream_start
+            logger.info(f"⏱️ Stream TOTAL: {total_time:.2f}s")
+
+            # Signal completion
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
         except Exception as e:
             error_id = uuid.uuid4().hex[:8]
-            logger.error(f"Stream error [{error_id}]: {e}")
-            yield f"event: error\ndata: internal_error:{error_id}\n\n"
+            logger.error(f"❌ Stream error [{error_id}]: {e}", exc_info=True)
+            yield f"data: {json.dumps({'type': 'error', 'content': f'internal_error:{error_id}'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(
         generate(),

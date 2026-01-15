@@ -239,7 +239,7 @@ def search_products(
     query: str = "",  # Default empty string for Gemini 3 sporadic bug
     category: Optional[str] = None,
     max_price: Optional[float] = None,
-    in_stock_only: bool = True
+    in_stock_only: bool = False
 ) -> dict:
     """
     Search for products in the Scoop.ge catalog.
@@ -285,46 +285,100 @@ def search_products(
         }
 
     try:
-        # Translation map for Georgian queries
+        products = []
+        logger.info(f"🔎 search_products called with query='{query}'")
+
+        # === STEP 0: Translate Georgian to English FIRST ===
+        # This translation is used for BOTH $text and $regex searches
         query_map = {
-            "პროტეინ": "protein",
-            "კრეატინ": "creatine",
-            "ვიტამინ": "vitamin",
-            "bcaa": "bcaa",
-            "პრევორკაუთ": "pre-workout",
-            "გეინერ": "gainer|mass",
+            # Proteins
+            "პროტეინ": ["protein", "whey", "isolate", "casein"],
+            "ვეი": ["whey"],
+            "იზოლატ": ["isolate"],
+            "კაზეინ": ["casein"],
+            # Creatine
+            "კრეატინ": ["creatine"],
+            # Vitamins & Minerals
+            "ვიტამინ": ["vitamin"],
+            "მინერალ": ["mineral", "magnesium", "zinc", "calcium"],
+            "ომეგა": ["omega"],
+            "მაგნიუმ": ["magnesium"],
+            "თუთია": ["zinc"],
+            # Amino Acids
+            "ამინო": ["amino", "bcaa", "eaa"],
+            "bcaa": ["bcaa"],
+            "eaa": ["eaa"],
+            # Pre-workout & Energy
+            "პრევორკაუთ": ["pre-workout", "pre workout", "preworkout"],
+            "ენერგ": ["energy", "caffeine"],
+            "კოფეინ": ["caffeine"],
+            # Mass & Weight
+            "გეინერ": ["gainer", "mass"],
+            "მასა": ["mass", "gainer", "weight"],
+            "წონა": ["weight", "mass"],
+            # Recovery
+            "აღდგენ": ["recovery", "glutamine"],
+            "გლუტამინ": ["glutamine"],
+            # Fat Burners
+            "ცხიმ": ["fat", "burn", "l-carnitine", "carnitine"],
+            "კარნიტინ": ["carnitine", "l-carnitine"],
+            # Collagen
+            "კოლაგენ": ["collagen"],
         }
 
-        # Translate query
-        search_term = query.lower()
-        for geo, eng in query_map.items():
-            if geo in search_term:
-                search_term = eng
+        # Check if query is Georgian and translate
+        search_terms = [query.lower()]  # Default: use original query
+        text_search_query = query  # For $text search
+        for geo, eng_list in query_map.items():
+            if geo in query.lower():
+                search_terms = eng_list
+                # For $text search, use the FIRST English term (most specific)
+                text_search_query = eng_list[0]
+                logger.info(f"🔄 Translated '{query}' → $text: '{text_search_query}', $regex terms: {eng_list}")
                 break
 
-        # Build MongoDB query - SECURITY: escape regex special chars
-        safe_term = re.escape(search_term)
-        safe_query = re.escape(query)
-        mongo_query = {
-            "$or": [
-                {"name": {"$regex": safe_term, "$options": "i"}},
-                {"name_ka": {"$regex": safe_query, "$options": "i"}},
-                {"brand": {"$regex": safe_term, "$options": "i"}},
-                {"category": {"$regex": safe_term, "$options": "i"}},
-            ]
-        }
+        # === Phase 1: Try $text search first (indexed, ~10x faster) ===
+        # Requires text index: db.products.createIndex({name: "text", name_ka: "text", brand: "text", category: "text"}, {default_language: "none"})
+        # Skip $text entirely and go straight to $regex - more reliable
+        # NOTE: $text search has cold start issues (returns 0 on first call)
+        # $regex is slower but consistent
+        products = []  # Skip $text, let $regex handle it
 
-        if category:
-            mongo_query["category"] = proto_to_native(category)
+        # === Phase 2: Fallback to $regex if $text found nothing ===
+        if not products:
+            # Build MongoDB $or conditions for EACH search term
+            or_conditions = []
+            for term in search_terms:
+                safe_term = re.escape(term)
+                # English fields - case-insensitive
+                or_conditions.append({"name": {"$regex": safe_term, "$options": "i"}})
+                or_conditions.append({"brand": {"$regex": safe_term, "$options": "i"}})
 
-        if max_price:
-            mongo_query["price"] = {"$lte": max_price}
+            # Also search Georgian fields with original query (no translation needed)
+            safe_query = re.escape(query)
+            or_conditions.append({"name_ka": {"$regex": safe_query}})
+            or_conditions.append({"category": {"$regex": safe_query}})
 
-        if in_stock_only:
-            mongo_query["in_stock"] = True
+            mongo_query: Dict[str, Any] = {"$or": or_conditions}
+            logger.info(f"📝 Regex search: {len(search_terms)} terms, {len(or_conditions)} conditions")
 
-        # Sync query
-        products = list(_sync_db.products.find(mongo_query).limit(10))
+            # DISABLED: Category filter causes 0 results when Gemini passes wrong category format
+            # The $or conditions already include category search via regex
+            if category:
+                logger.info(f"⚠️ Category filter ignored: '{category}' (using regex instead)")
+
+            if max_price:
+                mongo_query["price"] = {"$lte": max_price}
+
+            if in_stock_only:
+                mongo_query["in_stock"] = True
+
+            # Sync query
+            logger.info(f"🔍 MongoDB query: {mongo_query}")
+            products = list(_sync_db.products.find(mongo_query).limit(10))
+            logger.info(f"📝 $regex found {len(products)} products for '{query}'")
+            if products:
+                logger.info(f"📦 First product: name='{products[0].get('name')}', brand='{products[0].get('brand')}'")
 
         # Format results
         results = []

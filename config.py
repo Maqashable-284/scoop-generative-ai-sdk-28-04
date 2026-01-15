@@ -29,7 +29,7 @@ class Settings(BaseModel):
     # Question #5: Rate Limits for Gemini 2.5 Flash:
     # - Free tier: 15 RPM, 1M TPM, 1500 RPD
     # - Paid tier: 2000 RPM, 4M TPM (standard), scales with billing
-    model_name: str = "gemini-3-flash-preview"  # FINAL - არ ვცვლი მეტჯერ!
+    model_name: str = "gemini-3-flash-preview"  # Gemini 3 Flash Preview
 
     # Session & Memory
     # Question #1: Memory Persistence - Session TTL
@@ -58,16 +58,16 @@ class Settings(BaseModel):
 
     # Gemini 3 Compatibility Settings
     gemini_timeout_seconds: int = Field(
-        default_factory=lambda: int(os.getenv("GEMINI_TIMEOUT_SECONDS", "60"))
+        default_factory=lambda: int(os.getenv("GEMINI_TIMEOUT_SECONDS", "30"))
     )
     max_output_tokens: int = Field(
         default_factory=lambda: int(os.getenv("MAX_OUTPUT_TOKENS", "8192"))
     )
     # FIX: Maximum function calls for automatic function calling
-    # Default SDK limit is 10, which is too low for Gemini 3 Flash Preview
-    # Increase to 30 to allow complete product search workflows
+    # CRITICAL: Reduced to 3 to prevent Gemini from calling search_products multiple times!
+    # Each extra call adds ~3-5s latency. 3 calls max: 1 search + 1 profile + 1 details
     max_function_calls: int = Field(
-        default_factory=lambda: int(os.getenv("MAX_FUNCTION_CALLS", "30"))
+        default_factory=lambda: int(os.getenv("MAX_FUNCTION_CALLS", "3"))
     )
 
     # Week 4: Context Caching Settings
@@ -93,9 +93,15 @@ class Settings(BaseModel):
         env_file = ".env"
 
 
-# System Prompt - Imported from prompts module
-# Full style guide: docs/RESPONSE_STYLE_GUIDE.md
-from prompts import SYSTEM_PROMPT
+# System Prompt - Choose between full and lean versions
+# Lean version is ~50% smaller for faster Gemini response times
+import os
+USE_LEAN_PROMPT = os.getenv("USE_LEAN_PROMPT", "true").lower() == "true"
+
+if USE_LEAN_PROMPT:
+    from prompts.system_prompt_lean import SYSTEM_PROMPT_LEAN as SYSTEM_PROMPT
+else:
+    from prompts import SYSTEM_PROMPT
 
 
 settings = Settings()
