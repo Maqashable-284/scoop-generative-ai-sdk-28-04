@@ -251,12 +251,14 @@ model_name: str = "gemini-2.5-flash"
 
 ## 📈 Next Steps
 
-1. **UI Migration**: Apply reference design to frontend (in progress)
-2. **Prompt Engineering**: Improve Gemini 3 compliance with [TIP]/[QUICK_REPLIES] tags
-3. **Monitoring**: Add function call count logging
-4. **Testing**: Comprehensive test suite for different query types
+1. ✅ **UI Migration**: Complete - see [scoop-vercel-fresh](https://github.com/Maqashable-284/scoop-vercel-fresh)
+2. ✅ **ThinkingStepsLoader**: 5-step animated loader during AI processing
+3. 🔄 **True Streaming**: Consider `send_message_stream()` for reduced TTFT
+4. 🔄 **Monitoring**: Add function call count logging
+5. 🔄 **Testing**: Comprehensive test suite for different query types
 
 ---
 
+**Related Frontend**: https://github.com/Maqashable-284/scoop-vercel-fresh  
 **Original Project**: https://github.com/Maqashable-284/scoop-genai-project  
 **Changelog**: See [CHANGELOG.md](CHANGELOG.md) for detailed updates
