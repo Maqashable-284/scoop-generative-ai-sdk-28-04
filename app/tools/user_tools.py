@@ -296,6 +296,7 @@ def search_products(
             "ვეი": ["whey"],
             "იზოლატ": ["isolate"],
             "კაზეინ": ["casein"],
+            "ცილა": ["protein", "whey"],
             # Creatine
             "კრეატინ": ["creatine"],
             # Vitamins & Minerals
@@ -310,20 +311,31 @@ def search_products(
             "eaa": ["eaa"],
             # Pre-workout & Energy
             "პრევორკაუთ": ["pre-workout", "pre workout", "preworkout"],
+            "პრე-ვორკაუტ": ["pre-workout", "pre workout", "preworkout"],
             "ენერგ": ["energy", "caffeine"],
             "კოფეინ": ["caffeine"],
-            # Mass & Weight
-            "გეინერ": ["gainer", "mass"],
+            # Mass & Weight Gainers
+            "გეინერ": ["gainer", "mass", "weight gainer", "serious mass"],
             "მასა": ["mass", "gainer", "weight"],
             "წონა": ["weight", "mass"],
             # Recovery
             "აღდგენ": ["recovery", "glutamine"],
             "გლუტამინ": ["glutamine"],
             # Fat Burners
-            "ცხიმ": ["fat", "burn", "l-carnitine", "carnitine"],
+            "ცხიმ": ["fat", "burn", "l-carnitine", "carnitine", "hydroxycut"],
             "კარნიტინ": ["carnitine", "l-carnitine"],
+            "ცხიმისმწველ": ["fat burner", "hydroxycut", "carnitine"],
             # Collagen
             "კოლაგენ": ["collagen"],
+            # Sugar-free / Low-carb
+            "შაქარ": ["zero sugar", "sugar free", "low carb", "zero", "isolate"],
+            "უშაქრო": ["zero sugar", "sugar free", "zero"],
+            "ნახშირწყალ": ["low carb", "zero carb", "isolate"],
+            # Brands
+            "optimum": ["optimum", "optimum nutrition", "gold standard"],
+            "მუსლტექ": ["muscletech"],
+            "დაიმატაიზ": ["dymatize"],
+            "მიუტანტ": ["mutant"],
         }
 
         # Check if query is Georgian and translate
